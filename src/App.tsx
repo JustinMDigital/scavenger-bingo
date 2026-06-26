@@ -52,7 +52,6 @@ import {
   useState,
 } from "react";
 import {
-  DEFAULT_GAME_CODE,
   addStop as createStop,
   addTask as createTask,
   claimHost,
@@ -172,13 +171,17 @@ const TASK_ICON_OPTIONS = Object.keys(ICONS).sort((first, second) =>
 
 export default function App() {
   const storedPlayer = useMemo(() => readStoredPlayer(), []);
+  const initialGameCode = useMemo(() => readStoredGameCode(), []);
   const [path, setPath] = useState(() => window.location.pathname);
-  const [gameCode, setGameCode] = useState(() => readStoredGameCode());
+  const isHostRoute = path === "/host";
+  const [gameCode, setGameCode] = useState(initialGameCode);
   const [isOnboardingDismissed, setIsOnboardingDismissed] = useState(() =>
     readOnboardingDismissed(),
   );
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [isLoading, setIsLoading] = useState(isSupabaseConfigured);
+  const [isLoading, setIsLoading] = useState(
+    isSupabaseConfigured && initialGameCode.length > 0,
+  );
   const [error, setError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [boardView, setBoardView] = useState<BoardView>("grid");
@@ -198,18 +201,29 @@ export default function App() {
         return null;
       }
 
+      const requestedCode = code.trim().toUpperCase();
+
+      if (!requestedCode) {
+        setGameState(null);
+        setIsLoading(false);
+        return null;
+      }
+
       if (!options?.silent) {
         setIsLoading(true);
       }
 
       try {
-        const nextState = await loadGameState(code);
+        const nextState = await loadGameState(requestedCode);
         setGameState(nextState);
         setGameCode(nextState.game.code);
         storeGameCode(nextState.game.code);
         setError("");
         return nextState;
       } catch (caughtError) {
+        if (!options?.silent) {
+          setGameState(null);
+        }
         setError(getErrorMessage(caughtError));
         return null;
       } finally {
@@ -228,6 +242,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!gameCode.trim()) {
+      setIsLoading(false);
+      return;
+    }
+
     void refreshGameState(gameCode);
   }, [gameCode, refreshGameState]);
 
@@ -268,7 +287,6 @@ export default function App() {
   const stops = gameState?.stops ?? [];
   const submissions = gameState?.submissions ?? [];
   const membership = gameState?.membership ?? null;
-  const isHostRoute = path === "/host";
   const currentGroup =
     membership?.role === "player"
       ? groups.find((group) => group.id === membership.groupId) ?? null
@@ -423,6 +441,16 @@ export default function App() {
       setToast("Join failed");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function handleLoadGameCode(nextGameCode: string) {
+    const loadedState = await refreshGameState(nextGameCode);
+
+    if (loadedState) {
+      setToast(`Loaded ${loadedState.game.code}`);
+    } else {
+      setToast("Game not found");
     }
   }
 
@@ -880,7 +908,30 @@ export default function App() {
     return <LoadingView />;
   }
 
-  if (!gameState || !activeStop) {
+  if (!gameState) {
+    if (isHostRoute) {
+      return (
+        <HostSetupView
+          defaultDisplayName={storedPlayer?.name ?? ""}
+          defaultGameCode={gameCode}
+          error={error}
+          isBusy={isLoading}
+          onClaim={handleClaimHost}
+        />
+      );
+    }
+
+    return (
+      <GameCodeGate
+        defaultGameCode={gameCode}
+        error={error}
+        isBusy={isLoading}
+        onLoad={handleLoadGameCode}
+      />
+    );
+  }
+
+  if (!activeStop) {
     return (
       <ErrorView
         error={error || "Game could not be loaded."}
@@ -1040,6 +1091,98 @@ function LoadingView() {
           <p className="label">Scavenger Blackout</p>
           <h1>Loading game...</h1>
         </div>
+      </section>
+    </main>
+  );
+}
+
+function HostSetupView({
+  defaultDisplayName,
+  defaultGameCode,
+  error,
+  isBusy,
+  onClaim,
+}: {
+  defaultDisplayName: string;
+  defaultGameCode: string;
+  error: string;
+  isBusy: boolean;
+  onClaim: (request: HostClaimRequest) => void;
+}) {
+  return (
+    <main className="main-content">
+      {error && (
+        <div className="toast-region error-message" role="alert">
+          {error}
+        </div>
+      )}
+      <HostGate
+        defaultDisplayName={defaultDisplayName}
+        defaultGameCode={defaultGameCode}
+        isBusy={isBusy}
+        onClaim={onClaim}
+      />
+    </main>
+  );
+}
+
+function GameCodeGate({
+  defaultGameCode,
+  error,
+  isBusy,
+  onLoad,
+}: {
+  defaultGameCode: string;
+  error: string;
+  isBusy: boolean;
+  onLoad: (gameCode: string) => void;
+}) {
+  const [gameCode, setGameCode] = useState(defaultGameCode);
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const cleanGameCode = gameCode.trim();
+
+    if (!cleanGameCode) {
+      return;
+    }
+
+    onLoad(cleanGameCode);
+  }
+
+  return (
+    <main className="main-content">
+      {error && (
+        <div className="toast-region error-message" role="alert">
+          {error}
+        </div>
+      )}
+      <section className="welcome-card" aria-labelledby="game-code-title">
+        <div>
+          <p className="label">Join game</p>
+          <h1 id="game-code-title">Enter the game code from your host.</h1>
+          <p>The code loads the right teams and board for this event.</p>
+        </div>
+
+        <form className="join-form" onSubmit={handleSubmit}>
+          <label className="field">
+            <span>Game code</span>
+            <input
+              autoCapitalize="characters"
+              autoComplete="off"
+              value={gameCode}
+              onChange={(event) => setGameCode(event.target.value.toUpperCase())}
+              placeholder="FAMILY-2026"
+            />
+          </label>
+          <button
+            className="join-submit"
+            disabled={!gameCode.trim() || isBusy}
+            type="submit"
+          >
+            {isBusy ? "Loading..." : "Load game"}
+          </button>
+        </form>
       </section>
     </main>
   );
@@ -1222,7 +1365,7 @@ function JoinView({
             autoComplete="off"
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-            placeholder={DEFAULT_GAME_CODE}
+            placeholder="FAMILY-2026"
           />
         </label>
 
@@ -1313,19 +1456,19 @@ function HostGate({
     <section className="welcome-card" aria-labelledby="host-title">
       <div>
         <p className="label">Host access</p>
-        <h2 id="host-title">Claim the host view.</h2>
-        <p>Use the event game code and host PIN.</p>
+        <h2 id="host-title">Set the game code and open the host view.</h2>
+        <p>This is the code players enter before joining a group.</p>
       </div>
 
       <form className="join-form" onSubmit={handleSubmit}>
         <label className="field">
-          <span>Game code</span>
+          <span>Game code for players</span>
           <input
             autoCapitalize="characters"
             autoComplete="off"
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-            placeholder={DEFAULT_GAME_CODE}
+            placeholder="FAMILY-2026"
           />
         </label>
         <label className="field">
@@ -1353,7 +1496,7 @@ function HostGate({
           disabled={!displayName.trim() || !gameCode.trim() || !pin.trim() || isBusy}
           type="submit"
         >
-          {isBusy ? "Checking..." : "Open host view"}
+          {isBusy ? "Checking..." : "Set code and open host"}
         </button>
       </form>
     </section>
@@ -3582,11 +3725,10 @@ function storeOnboardingDismissed() {
 function readStoredGameCode() {
   try {
     return (
-      window.localStorage.getItem(STORAGE_GAME_CODE_KEY)?.trim().toUpperCase() ||
-      DEFAULT_GAME_CODE
+      window.localStorage.getItem(STORAGE_GAME_CODE_KEY)?.trim().toUpperCase() || ""
     );
   } catch {
-    return DEFAULT_GAME_CODE;
+    return "";
   }
 }
 

@@ -134,6 +134,10 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
   const user = await ensureAnonymousSession();
   const normalizedCode = normalizeGameCode(gameCode);
 
+  if (!normalizedCode) {
+    throw new Error("Game code is required.");
+  }
+
   const gameResult = await client
     .from("games")
     .select("*")
@@ -247,8 +251,8 @@ export async function claimHost({
   const client = requireSupabase();
   await ensureAnonymousSession();
 
-  const result = await client.rpc("claim_host", {
-    game_code: normalizeGameCode(gameCode),
+  const result = await client.rpc("configure_game_code", {
+    desired_game_code: normalizeGameCode(gameCode),
     pin,
     display_name: displayName.trim(),
   });
@@ -1006,7 +1010,7 @@ function mapSubmission(
 }
 
 function normalizeGameCode(gameCode: string) {
-  return gameCode.trim().toUpperCase() || DEFAULT_GAME_CODE;
+  return gameCode.trim().toUpperCase();
 }
 
 function getFileExtension(file: File) {

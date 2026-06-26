@@ -18,7 +18,7 @@ supabase db push
 
 The migration seeds:
 
-- Game code: `FAMILY`
+- Initial game code: `FAMILY`
 - Groups: Purple, Maroon, Orange
 - 25 board tasks
 - 3 route stops
@@ -30,6 +30,8 @@ update private.host_secrets
 set pin_hash = extensions.crypt('<new-pin>', extensions.gen_salt('bf'))
 where game_id = '00000000-0000-4000-8000-000000000001';
 ```
+
+After the host PIN is set, open `/host` and choose the game code players should use.
 
 After pushing the migration, run advisors against the linked project:
 

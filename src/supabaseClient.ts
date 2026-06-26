@@ -191,6 +191,14 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      configure_game_code: {
+        Args: {
+          desired_game_code: string;
+          pin: string;
+          display_name: string;
+        };
+        Returns: Database["public"]["Tables"]["memberships"]["Row"];
+      };
       claim_host: {
         Args: {
           game_code: string;
