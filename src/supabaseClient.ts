@@ -216,6 +216,12 @@ export type Database = {
         };
         Returns: Database["public"]["Tables"]["memberships"]["Row"];
       };
+      kick_player_membership: {
+        Args: {
+          target_membership_id: string;
+        };
+        Returns: Database["public"]["Tables"]["memberships"]["Row"];
+      };
       claim_host: {
         Args: {
           game_code: string;

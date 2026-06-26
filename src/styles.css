@@ -347,6 +347,7 @@ img {
 .task-list-item:active,
 .task-tile:active,
 .team-card:active,
+.roster-kick-button:active,
 .onboarding-hint button:active,
 .join-submit:active,
 .play-time-button:active,
@@ -1935,7 +1936,7 @@ img {
 
 .roster-member {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 10rem);
+  grid-template-columns: minmax(0, 1fr) minmax(11.5rem, 15rem);
   align-items: center;
   gap: var(--space-xs);
   border-radius: var(--radius-md);
@@ -1963,6 +1964,13 @@ img {
   font-weight: 850;
 }
 
+.roster-member-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
 .roster-member select {
   min-height: 2.45rem;
   width: 100%;
@@ -1975,8 +1983,35 @@ img {
   font-weight: 850;
 }
 
-.roster-member select:disabled {
+.roster-kick-button {
+  display: inline-flex;
+  min-height: 2.45rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding-inline: 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.roster-kick-button svg {
+  width: 0.92rem;
+  height: 0.92rem;
+  flex: 0 0 auto;
+}
+
+.roster-member select:disabled,
+.roster-kick-button:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .roster-empty {

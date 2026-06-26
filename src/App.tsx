@@ -38,6 +38,7 @@ import {
   TreePine,
   Trees,
   Upload,
+  UserMinus,
   Users,
   X,
 } from "lucide-react";
@@ -57,6 +58,7 @@ import {
   addTask as createTask,
   claimHost,
   joinGame,
+  kickPlayerMembership,
   loadGameState,
   movePlayerMembership,
   removeStop as deleteStop,
@@ -197,6 +199,7 @@ export default function App() {
   const [timerTick, setTimerTick] = useState(Date.now());
   const [uploadingTaskId, setUploadingTaskId] = useState("");
   const [movingMembershipId, setMovingMembershipId] = useState("");
+  const [kickingMembershipId, setKickingMembershipId] = useState("");
 
   const refreshGameState = useCallback(
     async (code = gameCode, options?: { silent?: boolean }) => {
@@ -219,7 +222,18 @@ export default function App() {
 
       try {
         const nextState = await loadGameState(requestedCode);
-        setGameState(nextState);
+        setGameState((previousState) => {
+          if (
+            previousState?.membership?.role === "player" &&
+            !nextState.membership &&
+            previousState.game.id === nextState.game.id
+          ) {
+            clearStoredPlayer();
+            setToast("You were removed from the lobby");
+          }
+
+          return nextState;
+        });
         setGameCode(nextState.game.code);
         storeGameCode(nextState.game.code);
         setError("");
@@ -549,7 +563,10 @@ export default function App() {
 
     setMovingMembershipId(membershipId);
     try {
-      await movePlayerMembership({ membershipId, groupId });
+      const movedMembership = await movePlayerMembership({ membershipId, groupId });
+      setGameState((currentState) =>
+        currentState ? replaceMembership(currentState, movedMembership) : currentState,
+      );
       await refreshGameState(gameState.game.code, { silent: true });
       setToast("Player moved");
     } catch (caughtError) {
@@ -557,6 +574,25 @@ export default function App() {
       setToast("Move failed");
     } finally {
       setMovingMembershipId("");
+    }
+  }
+
+  async function handleKickPlayerMembership(membershipId: string) {
+    if (!gameState || membership?.role !== "host") return;
+
+    setKickingMembershipId(membershipId);
+    try {
+      const kickedMembership = await kickPlayerMembership(membershipId);
+      setGameState((currentState) =>
+        currentState ? removeMembership(currentState, kickedMembership.id) : currentState,
+      );
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Player kicked");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Kick failed");
+    } finally {
+      setKickingMembershipId("");
     }
   }
 
@@ -1076,6 +1112,8 @@ export default function App() {
               goToPlayTime={handlePlayTime}
               goToNextStop={handleNextStop}
               groups={groups}
+              kickingMembershipId={kickingMembershipId}
+              kickPlayer={handleKickPlayerMembership}
               memberships={memberships}
               movingMembershipId={movingMembershipId}
               movePlayer={handleMovePlayerMembership}
@@ -1790,6 +1828,8 @@ function HostView({
   goToPlayTime,
   goToNextStop,
   groups,
+  kickingMembershipId,
+  kickPlayer,
   memberships,
   movingMembershipId,
   movePlayer,
@@ -1823,6 +1863,8 @@ function HostView({
   goToPlayTime: (afterStopIndex: number) => void;
   goToNextStop: () => void;
   groups: Group[];
+  kickingMembershipId: string;
+  kickPlayer: (membershipId: string) => void;
   memberships: Membership[];
   movingMembershipId: string;
   movePlayer: (membershipId: string, groupId: string) => void;
@@ -2033,8 +2075,10 @@ function HostView({
 
       <TeamManagementPanel
         groups={groups}
+        kickingMembershipId={kickingMembershipId}
         memberships={memberships}
         movingMembershipId={movingMembershipId}
+        onKickPlayer={kickPlayer}
         onMovePlayer={movePlayer}
         submissions={submissions}
       />
@@ -2095,14 +2139,18 @@ function HostView({
 
 function TeamManagementPanel({
   groups,
+  kickingMembershipId,
   memberships,
   movingMembershipId,
+  onKickPlayer,
   onMovePlayer,
   submissions,
 }: {
   groups: Group[];
+  kickingMembershipId: string;
   memberships: Membership[];
   movingMembershipId: string;
+  onKickPlayer: (membershipId: string) => void;
   onMovePlayer: (membershipId: string, groupId: string) => void;
   submissions: Submission[];
 }) {
@@ -2164,6 +2212,24 @@ function TeamManagementPanel({
     onMovePlayer(player.id, nextGroupId);
   }
 
+  function handleKick(player: Membership) {
+    const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+    const proofNote =
+      proofCount > 0
+        ? ` ${getProofCountLabel(proofCount)} will stay with the current team.`
+        : "";
+
+    if (
+      !window.confirm(
+        `Kick ${player.displayName} from this lobby?${proofNote}`,
+      )
+    ) {
+      return;
+    }
+
+    onKickPlayer(player.id);
+  }
+
   return (
     <section className="host-roster" aria-labelledby="roster-heading">
       <div className="section-heading">
@@ -2198,27 +2264,47 @@ function TeamManagementPanel({
                     {groupPlayers.map((player) => {
                       const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
                       const isMoving = movingMembershipId === player.id;
+                      const isKicking = kickingMembershipId === player.id;
+                      const hasRosterAction =
+                        movingMembershipId.length > 0 ||
+                        kickingMembershipId.length > 0;
 
                       return (
                         <li className="roster-member" key={player.id}>
                           <span className="roster-member-main">
                             <strong>{player.displayName}</strong>
                             <span>
-                              {isMoving ? "Moving..." : getProofCountLabel(proofCount)}
+                              {isKicking
+                                ? "Kicking..."
+                                : isMoving
+                                  ? "Moving..."
+                                  : getProofCountLabel(proofCount)}
                             </span>
                           </span>
-                          <select
-                            aria-label={`Move ${player.displayName} to another team`}
-                            disabled={movingMembershipId.length > 0}
-                            value={player.groupId ?? ""}
-                            onChange={(event) => handleMove(player, event.target.value)}
-                          >
-                            {groups.map((targetGroup) => (
-                              <option key={targetGroup.id} value={targetGroup.id}>
-                                {targetGroup.shortName}
-                              </option>
-                            ))}
-                          </select>
+                          <span className="roster-member-actions">
+                            <select
+                              aria-label={`Move ${player.displayName} to another team`}
+                              disabled={hasRosterAction}
+                              value={player.groupId ?? ""}
+                              onChange={(event) => handleMove(player, event.target.value)}
+                            >
+                              {groups.map((targetGroup) => (
+                                <option key={targetGroup.id} value={targetGroup.id}>
+                                  {targetGroup.shortName}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              aria-label={`Kick ${player.displayName} from lobby`}
+                              className="roster-kick-button"
+                              disabled={hasRosterAction}
+                              type="button"
+                              onClick={() => handleKick(player)}
+                            >
+                              <UserMinus aria-hidden="true" />
+                              <span>Kick</span>
+                            </button>
+                          </span>
                         </li>
                       );
                     })}
@@ -3711,6 +3797,28 @@ function getStatusLabel(status: TaskStatus) {
 
 function getProofCountLabel(count: number) {
   return count === 1 ? "1 proof" : `${count} proofs`;
+}
+
+function replaceMembership(gameState: GameState, membership: Membership): GameState {
+  return {
+    ...gameState,
+    membership:
+      gameState.membership?.id === membership.id ? membership : gameState.membership,
+    memberships: gameState.memberships.map((currentMembership) =>
+      currentMembership.id === membership.id ? membership : currentMembership,
+    ),
+  };
+}
+
+function removeMembership(gameState: GameState, membershipId: string): GameState {
+  return {
+    ...gameState,
+    membership:
+      gameState.membership?.id === membershipId ? null : gameState.membership,
+    memberships: gameState.memberships.filter(
+      (membership) => membership.id !== membershipId,
+    ),
+  };
 }
 
 function getProofStateNote(

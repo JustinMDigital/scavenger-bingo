@@ -295,6 +295,23 @@ export async function movePlayerMembership({
   return mapMembership(result.data);
 }
 
+export async function kickPlayerMembership(membershipId: string) {
+  const client = requireSupabase();
+  const result = await client.rpc("kick_player_membership", {
+    target_membership_id: membershipId,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (!result.data) {
+    throw new Error("Kick did not return a player membership.");
+  }
+
+  return mapMembership(result.data);
+}
+
 export async function saveTaskProof({
   gameId,
   groupId,
