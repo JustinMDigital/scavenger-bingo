@@ -12,6 +12,7 @@
   --surface: oklch(0.985 0.004 245);
   --surface-strong: oklch(0.95 0.014 250);
   --ink: oklch(0.145 0.018 255);
+  --ink-muted: oklch(0.31 0.026 252);
   --muted: oklch(0.39 0.03 252);
   --faint: oklch(0.58 0.028 252);
   --line: oklch(0.875 0.018 250);
@@ -47,7 +48,10 @@
   --radius-md: 0.75rem;
   --radius-lg: 1rem;
 
+  --shadow-sm: 0 0.22rem 0.5rem oklch(0.145 0.018 255 / 0.12);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --z-sticky: 10;
   --z-toast: 40;
   --z-dialog: 80;
@@ -98,6 +102,41 @@ a:focus-visible {
 img {
   display: block;
   max-width: 100%;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0.01;
+    transform: translateY(-0.35rem) scale(0.992);
+    filter: blur(3px);
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0.01;
+    transform: translateY(0.7rem) scale(0.992);
+    filter: blur(3px);
+  }
+}
+
+@keyframes status-pop {
+  0% {
+    opacity: 0.01;
+    transform: scale(0.72);
+  }
+
+  72% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes image-in {
+  from {
+    opacity: 0.01;
+    transform: scale(0.985);
+    filter: blur(4px);
+  }
 }
 
 .site-shell {
@@ -216,12 +255,14 @@ img {
   transition:
     background 160ms var(--ease-out),
     box-shadow 160ms var(--ease-out),
+    color 160ms var(--ease-out),
     transform 120ms var(--ease-out);
 }
 
 .timer-pill svg {
   width: 1.1rem;
   height: 1.1rem;
+  transition: transform 160ms var(--ease-out);
 }
 
 .timer-pill.is-warning {
@@ -239,6 +280,10 @@ img {
   box-shadow: inset 0 0 0 2px var(--primary);
 }
 
+.timer-pill[aria-expanded="true"] svg {
+  transform: rotate(12deg) scale(1.04);
+}
+
 .stop-details-panel {
   display: flex;
   align-items: start;
@@ -250,6 +295,8 @@ img {
   background: var(--warning-soft);
   padding: var(--space-sm);
   color: var(--ink);
+  transform-origin: top center;
+  animation: panel-in 180ms var(--ease-out-expo);
 }
 
 .stop-details-panel h2 {
@@ -279,6 +326,10 @@ img {
   padding-inline: var(--space-sm);
   font-size: 0.86rem;
   font-weight: 900;
+  transition:
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .timer-pill:active,
@@ -289,11 +340,18 @@ img {
 .approve-button:active,
 .retake-button:active,
 .add-stop-button:active,
+.board-editor-toggle:active,
 .board-view-toggle button:active,
+.group-board-tab:active,
+.join-group-options button:active,
 .task-list-item:active,
 .task-tile:active,
+.team-card:active,
 .onboarding-hint button:active,
 .join-submit:active,
+.play-time-button:active,
+.proof-image-button:active,
+.proof-lightbox-close:active,
 .welcome-card button:active {
   transform: scale(0.985);
 }
@@ -432,6 +490,10 @@ img {
   padding-inline: var(--space-sm);
   font-size: 1.05rem;
   font-weight: 750;
+  transition:
+    border-color 160ms var(--ease-out),
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out);
 }
 
 .stop-field input,
@@ -445,6 +507,10 @@ img {
   padding-inline: var(--space-sm);
   font-size: 0.95rem;
   font-weight: 750;
+  transition:
+    border-color 160ms var(--ease-out),
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out);
 }
 
 .stop-field input,
@@ -485,6 +551,11 @@ img {
   font-size: 1rem;
   font-weight: 900;
   text-align: start;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .join-group-options button svg {
@@ -537,6 +608,7 @@ img {
   font-weight: 950;
   transition:
     background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
     opacity 160ms var(--ease-out),
     transform 120ms var(--ease-out);
 }
@@ -588,10 +660,12 @@ img {
   background: var(--success-soft);
   color: var(--success);
   padding: var(--space-sm);
+  animation: panel-in 190ms var(--ease-out-expo);
 }
 
 .blackout-banner svg {
   flex: 0 0 auto;
+  animation: status-pop 220ms var(--ease-out-expo);
 }
 
 .blackout-banner strong,
@@ -613,6 +687,7 @@ img {
   border-radius: var(--radius-lg);
   background: var(--primary-soft);
   padding: var(--space-sm);
+  animation: panel-in 180ms var(--ease-out-expo);
 }
 
 .onboarding-icon {
@@ -652,6 +727,10 @@ img {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--primary-dark);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .onboarding-hint button svg {
@@ -741,12 +820,14 @@ img {
   transition:
     border-color 160ms var(--ease-out),
     background 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out),
     transform 120ms var(--ease-out);
 }
 
 .task-tile.is-selected {
-  border: 2px solid var(--primary);
+  border-color: var(--primary);
   background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .task-tile.is-pending {
@@ -772,6 +853,11 @@ img {
   width: 1.25rem;
   height: 1.25rem;
   color: currentColor;
+  transition: transform 160ms var(--ease-out);
+}
+
+.task-tile.is-selected .task-icon {
+  transform: scale(1.08);
 }
 
 .task-title {
@@ -800,6 +886,7 @@ img {
   place-items: center;
   border-radius: 999px;
   color: var(--muted);
+  animation: status-pop 180ms var(--ease-out-expo);
 }
 
 .tile-state svg {
@@ -844,6 +931,7 @@ img {
   transition:
     border-color 160ms var(--ease-out),
     background 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out),
     transform 120ms var(--ease-out);
 }
 
@@ -863,8 +951,9 @@ img {
 }
 
 .task-list-item.is-selected {
-  border: 2px solid var(--primary);
+  border-color: var(--primary);
   background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .task-list-icon {
@@ -875,6 +964,10 @@ img {
   border-radius: var(--radius-md);
   background: var(--surface-strong);
   color: var(--ink);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
 }
 
 .task-list-icon svg {
@@ -900,6 +993,7 @@ img {
 .task-list-item.is-selected .task-list-icon {
   background: white;
   color: var(--primary);
+  transform: scale(1.03);
 }
 
 .task-list-copy {
@@ -957,6 +1051,9 @@ img {
   overflow: auto;
   overscroll-behavior: contain;
   padding: var(--space-sm);
+  transform-origin: bottom center;
+  animation: sheet-in 190ms var(--ease-out-expo);
+  contain: paint;
 }
 
 .selected-task-main {
@@ -973,6 +1070,10 @@ img {
   border-radius: var(--radius-lg);
   background: var(--primary-soft);
   color: var(--primary);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
 }
 
 .selected-icon svg {
@@ -1002,6 +1103,10 @@ img {
   font-size: 0.84rem;
   font-weight: 850;
   line-height: 1.28;
+  animation: panel-in 170ms var(--ease-out-expo);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out);
 }
 
 .proof-state-note.is-pending {
@@ -1030,6 +1135,11 @@ img {
   padding: 0.22rem 0.55rem;
   font-size: 0.8rem;
   font-weight: 900;
+  animation: status-pop 160ms var(--ease-out-expo);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .status-badge svg {
@@ -1058,6 +1168,7 @@ img {
   align-items: center;
   gap: var(--space-sm);
   margin: 0;
+  animation: image-in 180ms var(--ease-out-expo);
 }
 
 .proof-preview img {
@@ -1075,6 +1186,12 @@ img {
 
 .proof-preview.is-retake img {
   filter: saturate(0.75);
+}
+
+.proof-replace-action,
+.photo-actions,
+.proof-cancel-action {
+  animation: panel-in 160ms var(--ease-out-expo);
 }
 
 .photo-actions,
@@ -1126,6 +1243,7 @@ img {
     background 160ms var(--ease-out),
     border-color 160ms var(--ease-out),
     color 160ms var(--ease-out),
+    opacity 160ms var(--ease-out),
     transform 120ms var(--ease-out);
 }
 
@@ -1189,11 +1307,18 @@ img {
 
 .host-stops,
 .host-board-editor,
+.host-roster,
 .board-editor-body,
 .stop-editor-list,
 .stop-editor-body {
   display: grid;
   gap: var(--space-xs);
+}
+
+.board-editor-body,
+.stop-editor-body {
+  transform-origin: top center;
+  animation: panel-in 180ms var(--ease-out-expo);
 }
 
 .host-board-editor.is-collapsed {
@@ -1232,8 +1357,10 @@ img {
   font-size: 0.84rem;
   font-weight: 950;
   transition:
+    background 160ms var(--ease-out),
     border-color 160ms var(--ease-out),
-    color 160ms var(--ease-out);
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .board-editor-toggle svg {
@@ -1397,6 +1524,11 @@ img {
   color: var(--group-color);
   font-size: 0.86rem;
   font-weight: 950;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .group-board-tab.is-active {
@@ -1454,11 +1586,16 @@ img {
   border-radius: var(--radius-lg);
   background: var(--bg);
   overflow: hidden;
+  transition:
+    background 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out);
 }
 
 .stop-editor.is-active {
-  border: 2px solid var(--primary);
+  border-color: var(--primary);
   background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .stop-editor-summary {
@@ -1510,6 +1647,7 @@ img {
   background: var(--primary);
   color: white;
   padding: 0.16rem 0.48rem;
+  animation: status-pop 170ms var(--ease-out-expo);
 }
 
 .stop-schedule {
@@ -1540,11 +1678,17 @@ img {
   border-radius: var(--radius-lg);
   background: var(--surface);
   overflow: hidden;
+  transition:
+    background 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .play-time-row.is-active {
-  border: 2px solid var(--primary);
+  border-color: var(--primary);
   background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .play-time-button {
@@ -1588,6 +1732,9 @@ img {
   color: white;
   padding: 0.65rem 0.9rem;
   box-shadow: var(--shadow-sm);
+  transition:
+    background 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .stop-editor-body {
@@ -1633,6 +1780,11 @@ img {
   color: var(--primary);
   font-size: 0.92rem;
   font-weight: 950;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .add-stop-button svg {
@@ -1664,6 +1816,7 @@ img {
 .team-card.is-selected {
   border-color: white;
   box-shadow: 0 0 0 3px var(--primary);
+  transform: translateY(-0.08rem);
 }
 
 .team-card-top {
@@ -1711,6 +1864,7 @@ img {
   height: 100%;
   border-radius: inherit;
   background: white;
+  transition: width 220ms var(--ease-out-expo);
 }
 
 .team-card p {
@@ -1720,6 +1874,158 @@ img {
   font-weight: 850;
 }
 
+.roster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-xs);
+}
+
+.team-roster {
+  display: grid;
+  align-content: start;
+  gap: var(--space-xs);
+  border: 1px solid var(--line);
+  border-block-start: 0.28rem solid var(--group-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  padding: var(--space-sm);
+}
+
+.team-roster-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.team-roster-header span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 950;
+}
+
+.team-roster-header span:first-child {
+  color: var(--group-color);
+}
+
+.team-roster-header svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.team-roster-header strong {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-list {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.roster-member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 10rem);
+  align-items: center;
+  gap: var(--space-xs);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 0.65rem;
+}
+
+.roster-member-main {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.roster-member-main strong {
+  overflow: hidden;
+  font-size: 0.92rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-member-main span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 850;
+}
+
+.roster-member select {
+  min-height: 2.45rem;
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--ink);
+  padding-inline: var(--space-xs);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.roster-member select:disabled {
+  opacity: 0.55;
+}
+
+.roster-empty {
+  display: grid;
+  min-height: 3rem;
+  place-items: center;
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.roster-empty-state {
+  background: var(--surface);
+}
+
+.host-roster-crew {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-sm);
+}
+
+.host-roster-crew > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.host-chip {
+  display: inline-flex;
+  min-height: 2rem;
+  max-width: 14rem;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-dark);
+  padding-inline: var(--space-sm);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
 .host-live-board {
   display: grid;
   gap: var(--space-xs);
@@ -1727,6 +2033,10 @@ img {
   border-radius: var(--radius-lg);
   background: var(--bg);
   padding: var(--space-sm);
+  animation: panel-in 180ms var(--ease-out-expo);
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out);
 }
 
 .host-board-header {
@@ -1846,12 +2156,18 @@ img {
   background: transparent;
   padding: 0;
   cursor: pointer;
+  transition:
+    border-color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .proof-image-button img {
   width: 5.25rem;
   aspect-ratio: 4 / 3;
   object-fit: cover;
+  transition:
+    filter 160ms var(--ease-out),
+    transform 180ms var(--ease-out);
 }
 
 .proof-copy {
@@ -1905,6 +2221,7 @@ img {
   padding-inline: var(--space-sm);
   font-size: 0.86rem;
   font-weight: 900;
+  animation: panel-in 160ms var(--ease-out-expo);
 }
 
 .received-pill svg {
@@ -1936,6 +2253,7 @@ img {
   position: absolute;
   inset: 0;
   background: oklch(0.145 0.018 255 / 0.82);
+  animation: panel-in 160ms var(--ease-out);
 }
 
 .proof-lightbox-panel {
@@ -1950,6 +2268,9 @@ img {
   background: var(--bg);
   padding: var(--space-sm);
   box-shadow: 0 1rem 3rem oklch(0.145 0.018 255 / 0.35);
+  transform-origin: center;
+  animation: sheet-in 210ms var(--ease-out-expo);
+  contain: paint;
 }
 
 .proof-lightbox-header {
@@ -1986,6 +2307,11 @@ img {
   border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--primary);
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
 }
 
 .proof-lightbox-close svg {
@@ -2023,11 +2349,15 @@ img {
   text-align: center;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 180ms var(--ease-out);
+  transform: translateY(-0.35rem);
+  transition:
+    opacity 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
 }
 
 .toast-region:not(:empty) {
   opacity: 1;
+  transform: translateY(0);
 }
 
 .visually-hidden {
@@ -2107,6 +2437,10 @@ img {
     flex-direction: column;
   }
 
+  .roster-member {
+    grid-template-columns: 1fr;
+  }
+
   .photo-actions,
   .host-controls,
   .board-editor-toolbar,
@@ -2142,6 +2476,19 @@ img {
   .join-group-options button:hover,
   .onboarding-hint button:hover {
     border-color: var(--primary);
+  }
+
+  .task-tile:hover:not(:disabled),
+  .task-list-item:hover,
+  .join-group-options button:hover,
+  .play-time-row:hover,
+  .team-card:hover,
+  .proof-image-button:hover {
+    transform: translateY(-0.05rem);
+  }
+
+  .proof-image-button:hover img {
+    transform: scale(1.025);
   }
 
   .primary-action:hover,

@@ -58,6 +58,7 @@ import {
   claimHost,
   joinGame,
   loadGameState,
+  movePlayerMembership,
   removeStop as deleteStop,
   removeTask as deleteTask,
   resetGameProofs,
@@ -76,6 +77,7 @@ import type {
   Group,
   HuntPhase,
   HuntStop,
+  Membership,
   Submission,
   SubmissionStatus,
   Task,
@@ -194,6 +196,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [timerTick, setTimerTick] = useState(Date.now());
   const [uploadingTaskId, setUploadingTaskId] = useState("");
+  const [movingMembershipId, setMovingMembershipId] = useState("");
 
   const refreshGameState = useCallback(
     async (code = gameCode, options?: { silent?: boolean }) => {
@@ -242,6 +245,11 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  function goToHostView() {
+    window.history.pushState({}, "", "/host");
+    setPath("/host");
+  }
+
   useEffect(() => {
     if (!gameCode.trim()) {
       setIsLoading(false);
@@ -287,6 +295,7 @@ export default function App() {
   const boardAssignments = gameState?.boardAssignments ?? [];
   const stops = gameState?.stops ?? [];
   const submissions = gameState?.submissions ?? [];
+  const memberships = gameState?.memberships ?? [];
   const membership = gameState?.membership ?? null;
   const currentGroup =
     membership?.role === "player"
@@ -418,6 +427,13 @@ export default function App() {
     setIsLoading(true);
     try {
       const loadedState = await loadGameState(request.gameCode);
+
+      if (loadedState.membership?.role === "host") {
+        throw new Error(
+          "This browser is already the host for this room. Use another browser or private window to join as a player.",
+        );
+      }
+
       const group =
         loadedState.groups.find((item) => item.id === request.groupId) ??
         loadedState.groups[0];
@@ -525,6 +541,22 @@ export default function App() {
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Review update failed");
+    }
+  }
+
+  async function handleMovePlayerMembership(membershipId: string, groupId: string) {
+    if (!gameState || membership?.role !== "host") return;
+
+    setMovingMembershipId(membershipId);
+    try {
+      await movePlayerMembership({ membershipId, groupId });
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Player moved");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Move failed");
+    } finally {
+      setMovingMembershipId("");
     }
   }
 
@@ -1044,6 +1076,9 @@ export default function App() {
               goToPlayTime={handlePlayTime}
               goToNextStop={handleNextStop}
               groups={groups}
+              memberships={memberships}
+              movingMembershipId={movingMembershipId}
+              movePlayer={handleMovePlayerMembership}
               removeTask={handleRemoveTask}
               removeStop={handleRemoveStop}
               saveGroupBoard={handleSaveGroupBoard}
@@ -1070,6 +1105,11 @@ export default function App() {
               onClaim={handleClaimHost}
             />
           )
+        ) : membership?.role === "host" ? (
+          <HostSessionNotice
+            roomCode={gameState.game.code}
+            onOpenHost={goToHostView}
+          />
         ) : membership?.role === "player" && currentGroup ? (
           <GroupView
             boardView={boardView}
@@ -1101,6 +1141,31 @@ export default function App() {
         {toast}
       </div>
     </div>
+  );
+}
+
+function HostSessionNotice({
+  roomCode,
+  onOpenHost,
+}: {
+  roomCode: string;
+  onOpenHost: () => void;
+}) {
+  return (
+    <section className="welcome-card" aria-labelledby="host-session-title">
+      <div>
+        <p className="label">Host session</p>
+        <h2 id="host-session-title">This browser is hosting {roomCode}.</h2>
+        <p>
+          Open the host view here, or use another browser/private window to join
+          this room as a player.
+        </p>
+      </div>
+
+      <button className="join-submit" type="button" onClick={onOpenHost}>
+        Open host view
+      </button>
+    </section>
   );
 }
 
@@ -1677,6 +1742,7 @@ function GroupView({
 
       {selectedTask && (
         <SelectedTaskCard
+          key={selectedTask.id}
           groupId={group.id}
           isUploading={uploadingTaskId === selectedTask.id}
           onSubmitProof={onSubmitProof}
@@ -1724,6 +1790,9 @@ function HostView({
   goToPlayTime,
   goToNextStop,
   groups,
+  memberships,
+  movingMembershipId,
+  movePlayer,
   removeTask,
   removeStop,
   resetGameProofs,
@@ -1754,6 +1823,9 @@ function HostView({
   goToPlayTime: (afterStopIndex: number) => void;
   goToNextStop: () => void;
   groups: Group[];
+  memberships: Membership[];
+  movingMembershipId: string;
+  movePlayer: (membershipId: string, groupId: string) => void;
   removeTask: (taskId: string) => void;
   removeStop: (stopId: string) => void;
   resetGameProofs: () => void;
@@ -1959,6 +2031,14 @@ function HostView({
         tasks={tasks}
       />
 
+      <TeamManagementPanel
+        groups={groups}
+        memberships={memberships}
+        movingMembershipId={movingMembershipId}
+        onMovePlayer={movePlayer}
+        submissions={submissions}
+      />
+
       <section className="host-groups" aria-labelledby="teams-heading">
         <div className="section-heading">
           <div>
@@ -2010,6 +2090,167 @@ function HostView({
         />
       </section>
     </div>
+  );
+}
+
+function TeamManagementPanel({
+  groups,
+  memberships,
+  movingMembershipId,
+  onMovePlayer,
+  submissions,
+}: {
+  groups: Group[];
+  memberships: Membership[];
+  movingMembershipId: string;
+  onMovePlayer: (membershipId: string, groupId: string) => void;
+  submissions: Submission[];
+}) {
+  const players = useMemo(
+    () => memberships.filter((membership) => membership.role === "player"),
+    [memberships],
+  );
+  const hosts = useMemo(
+    () => memberships.filter((membership) => membership.role === "host"),
+    [memberships],
+  );
+  const submissionsByPlayer = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    submissions.forEach((submission) => {
+      counts.set(submission.submittedBy, (counts.get(submission.submittedBy) ?? 0) + 1);
+    });
+
+    return counts;
+  }, [submissions]);
+  const playersByGroup = useMemo(() => {
+    const groupedPlayers = new Map<string, Membership[]>();
+
+    groups.forEach((group) => groupedPlayers.set(group.id, []));
+    players.forEach((player) => {
+      if (!player.groupId) {
+        return;
+      }
+
+      groupedPlayers.get(player.groupId)?.push(player);
+    });
+    groupedPlayers.forEach((groupPlayers) => {
+      groupPlayers.sort((first, second) =>
+        first.displayName.localeCompare(second.displayName),
+      );
+    });
+
+    return groupedPlayers;
+  }, [groups, players]);
+
+  function handleMove(player: Membership, nextGroupId: string) {
+    if (!nextGroupId || nextGroupId === player.groupId) {
+      return;
+    }
+
+    const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+
+    if (
+      proofCount > 0 &&
+      !window.confirm(
+        `${player.displayName} has ${getProofCountLabel(
+          proofCount,
+        )}. Move them anyway? Existing photos stay with their original team.`,
+      )
+    ) {
+      return;
+    }
+
+    onMovePlayer(player.id, nextGroupId);
+  }
+
+  return (
+    <section className="host-roster" aria-labelledby="roster-heading">
+      <div className="section-heading">
+        <div>
+          <p className="label">Players</p>
+          <h2 id="roster-heading">Team management</h2>
+        </div>
+        <span>{players.length === 1 ? "1 player" : `${players.length} players`}</span>
+      </div>
+
+      {players.length > 0 ? (
+        <div className="roster-grid">
+          {groups.map((group) => {
+            const groupPlayers = playersByGroup.get(group.id) ?? [];
+
+            return (
+              <article
+                className="team-roster"
+                key={group.id}
+                style={{ "--group-color": group.color } as React.CSSProperties}
+              >
+                <div className="team-roster-header">
+                  <span>
+                    <Users aria-hidden="true" />
+                    <strong>{group.shortName}</strong>
+                  </span>
+                  <span>{groupPlayers.length}</span>
+                </div>
+
+                {groupPlayers.length > 0 ? (
+                  <ul className="roster-list">
+                    {groupPlayers.map((player) => {
+                      const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+                      const isMoving = movingMembershipId === player.id;
+
+                      return (
+                        <li className="roster-member" key={player.id}>
+                          <span className="roster-member-main">
+                            <strong>{player.displayName}</strong>
+                            <span>
+                              {isMoving ? "Moving..." : getProofCountLabel(proofCount)}
+                            </span>
+                          </span>
+                          <select
+                            aria-label={`Move ${player.displayName} to another team`}
+                            disabled={movingMembershipId.length > 0}
+                            value={player.groupId ?? ""}
+                            onChange={(event) => handleMove(player, event.target.value)}
+                          >
+                            {groups.map((targetGroup) => (
+                              <option key={targetGroup.id} value={targetGroup.id}>
+                                {targetGroup.shortName}
+                              </option>
+                            ))}
+                          </select>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p className="roster-empty">No players</p>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-state roster-empty-state">
+          <Users aria-hidden="true" />
+          <strong>No players yet</strong>
+          <p>Joined players will appear here.</p>
+        </div>
+      )}
+
+      {hosts.length > 0 && (
+        <div className="host-roster-crew" aria-label="Hosts">
+          <p className="label">Hosts</p>
+          <div>
+            {hosts.map((host) => (
+              <span className="host-chip" key={host.id}>
+                {host.displayName}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -2664,7 +2905,7 @@ function TaskTile({
       <Icon className="task-icon" aria-hidden="true" />
       <span className="task-title">{task.title}</span>
       {status !== "ready" && (
-        <span className="tile-state" aria-label={getStatusLabel(status)}>
+        <span key={status} className="tile-state" aria-label={getStatusLabel(status)}>
           {status === "approved" ? <Check aria-hidden="true" /> : <Send aria-hidden="true" />}
         </span>
       )}
@@ -3250,7 +3491,10 @@ function StatusBadge({ status }: { status: TaskStatus }) {
     );
 
   return (
-    <span className={status === "ready" ? "status-badge" : `status-badge is-${status}`}>
+    <span
+      key={status}
+      className={status === "ready" ? "status-badge" : `status-badge is-${status}`}
+    >
       {icon}
       {getStatusLabel(status)}
     </span>
@@ -3463,6 +3707,10 @@ function getStatusLabel(status: TaskStatus) {
   if (status === "pending") return "Sent";
   if (status === "retake") return "Retake";
   return "Ready";
+}
+
+function getProofCountLabel(count: number) {
+  return count === 1 ? "1 proof" : `${count} proofs`;
 }
 
 function getProofStateNote(

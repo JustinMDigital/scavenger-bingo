@@ -93,6 +93,7 @@ export type GameState = {
   boardAssignments: BoardAssignment[];
   stops: HuntStop[];
   membership: Membership | null;
+  memberships: Membership[];
   submissions: Submission[];
 };
 
@@ -184,9 +185,14 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
   const membership = membershipResult.data
     ? mapMembership(membershipResult.data)
     : null;
-  const [boardAssignments, submissions] = await Promise.all([
+  const membershipsPromise =
+    membership?.role === "host"
+      ? loadGameMemberships(game.id)
+      : Promise.resolve(membership ? [membership] : []);
+  const [boardAssignments, submissions, memberships] = await Promise.all([
     loadBoardAssignments(game.id),
     membership ? loadSubmissionsForMembership(game.id, membership) : [],
+    membershipsPromise,
   ]);
 
   return {
@@ -196,6 +202,7 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
     boardAssignments,
     stops: stopsResult.data.map(mapStop),
     membership,
+    memberships,
     submissions,
   };
 }
@@ -259,6 +266,30 @@ export async function claimHost({
 
   if (result.error) {
     throw result.error;
+  }
+
+  return mapMembership(result.data);
+}
+
+export async function movePlayerMembership({
+  membershipId,
+  groupId,
+}: {
+  membershipId: string;
+  groupId: string;
+}) {
+  const client = requireSupabase();
+  const result = await client.rpc("move_player_membership", {
+    target_membership_id: membershipId,
+    target_group_slug: groupId,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (!result.data) {
+    throw new Error("Move did not return a player membership.");
   }
 
   return mapMembership(result.data);
@@ -750,6 +781,16 @@ export function subscribeToGameChanges(
         },
         refreshNow,
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "memberships",
+          filter: `game_id=eq.${gameId}`,
+        },
+        refreshNow,
+      )
       .subscribe((status: RealtimeSubscribeStatus, error?: Error) => {
         if (isStopped || generation !== channelGeneration) {
           return;
@@ -860,6 +901,21 @@ async function loadBoardAssignments(gameId: string) {
   }
 
   return result.data.map(mapBoardAssignment);
+}
+
+async function loadGameMemberships(gameId: string) {
+  const client = requireSupabase();
+  const result = await client
+    .from("memberships")
+    .select("*")
+    .eq("game_id", gameId)
+    .order("created_at", { ascending: true });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return result.data.map(mapMembership);
 }
 
 async function hydrateSubmissions(rows: SubmissionRow[]) {

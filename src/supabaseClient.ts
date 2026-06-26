@@ -209,6 +209,13 @@ export type Database = {
         };
         Returns: Database["public"]["Tables"]["memberships"]["Row"];
       };
+      move_player_membership: {
+        Args: {
+          target_membership_id: string;
+          target_group_slug: string;
+        };
+        Returns: Database["public"]["Tables"]["memberships"]["Row"];
+      };
       claim_host: {
         Args: {
           game_code: string;
