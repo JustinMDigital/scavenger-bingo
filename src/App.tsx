@@ -1009,7 +1009,7 @@ export default function App() {
       <SiteHeader
         currentGroup={isHostRoute ? null : currentGroup}
         isHostRoute={isHostRoute}
-        routeTitle={routeDisplay.title}
+        roomCode={gameState.game.code}
         showStopDetails={showStopDetails}
         timerDisplay={timerDisplay}
         onTimerClick={() => setShowStopDetails((shown) => !shown)}
@@ -1266,14 +1266,14 @@ function ErrorView({
 function SiteHeader({
   currentGroup,
   isHostRoute,
-  routeTitle,
+  roomCode,
   showStopDetails,
   timerDisplay,
   onTimerClick,
 }: {
   currentGroup: Group | null;
   isHostRoute: boolean;
-  routeTitle: string;
+  roomCode: string;
   showStopDetails: boolean;
   timerDisplay: TimerDisplay;
   onTimerClick: () => void;
@@ -1304,7 +1304,7 @@ function SiteHeader({
           ) : (
             "Join game"
           )}
-          <span>{routeTitle}</span>
+          <span className="room-code-kicker">Room {roomCode}</span>
         </p>
         <h1>Scavenger Blackout</h1>
       </div>

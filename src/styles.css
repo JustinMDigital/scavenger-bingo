@@ -184,6 +184,10 @@ img {
   height: 0.86rem;
 }
 
+.room-code-kicker {
+  overflow-wrap: anywhere;
+}
+
 .team-dot {
   width: 0.55rem;
   height: 0.55rem;
