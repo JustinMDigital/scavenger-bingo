@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.playwright-cli/
+.impeccable/
+output/
+coverage/
+
+.DS_Store
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+*.local
