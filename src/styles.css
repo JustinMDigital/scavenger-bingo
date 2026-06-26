@@ -1146,6 +1146,11 @@ img {
   color: var(--danger);
 }
 
+.control-button.danger.is-critical {
+  background: var(--danger);
+  color: white;
+}
+
 .approve-button {
   background: var(--success);
   color: white;

@@ -52,6 +52,7 @@ import {
   useState,
 } from "react";
 import {
+  abandonGameLobby,
   addStop as createStop,
   addTask as createTask,
   claimHost,
@@ -563,6 +564,40 @@ export default function App() {
     }
   }
 
+  async function handleAbandonGame() {
+    if (!gameState || membership?.role !== "host") return;
+
+    const confirmation = window.prompt(
+      "Type ABANDON to remove every player and host, delete submitted proofs, close this game code, and return to host setup. This cannot be undone.",
+    );
+
+    if (confirmation !== "ABANDON") {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const abandonResult = await abandonGameLobby(gameState.game.id);
+      clearStoredGameCode();
+      clearStoredPlayer();
+      setGameCode("");
+      setGameState(null);
+      setSelectedTaskId("");
+      setSelectedHostGroupId("");
+      setExpandedStopId("");
+      setError("");
+      setToast(
+        `Abandoned lobby and removed ${abandonResult.removedMemberships} members`,
+      );
+    } catch (caughtError) {
+      const message = getErrorMessage(caughtError);
+      setError(message);
+      setToast(`Abandon failed: ${message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function handleUpdateStop(
     stopId: string,
     patch: Partial<Pick<HuntStop, "name" | "detail" | "arriveTime" | "leaveTime">>,
@@ -916,6 +951,7 @@ export default function App() {
           defaultGameCode={gameCode}
           error={error}
           isBusy={isLoading}
+          statusMessage={toast}
           onClaim={handleClaimHost}
         />
       );
@@ -926,6 +962,7 @@ export default function App() {
         defaultGameCode={gameCode}
         error={error}
         isBusy={isLoading}
+        statusMessage={toast}
         onLoad={handleLoadGameCode}
       />
     );
@@ -999,6 +1036,7 @@ export default function App() {
               addFiveMinutes={handleAddFiveMinutes}
               addStop={handleAddStop}
               addTask={handleAddTask}
+              abandonGame={handleAbandonGame}
               boardAssignments={boardAssignments}
               expandedStopId={expandedStopId}
               generateBoards={handleGenerateBoards}
@@ -1101,12 +1139,14 @@ function HostSetupView({
   defaultGameCode,
   error,
   isBusy,
+  statusMessage,
   onClaim,
 }: {
   defaultDisplayName: string;
   defaultGameCode: string;
   error: string;
   isBusy: boolean;
+  statusMessage: string;
   onClaim: (request: HostClaimRequest) => void;
 }) {
   return (
@@ -1114,6 +1154,11 @@ function HostSetupView({
       {error && (
         <div className="toast-region error-message" role="alert">
           {error}
+        </div>
+      )}
+      {statusMessage && (
+        <div className="toast-region" role="status" aria-live="polite">
+          {statusMessage}
         </div>
       )}
       <HostGate
@@ -1130,11 +1175,13 @@ function GameCodeGate({
   defaultGameCode,
   error,
   isBusy,
+  statusMessage,
   onLoad,
 }: {
   defaultGameCode: string;
   error: string;
   isBusy: boolean;
+  statusMessage: string;
   onLoad: (gameCode: string) => void;
 }) {
   const [gameCode, setGameCode] = useState(defaultGameCode);
@@ -1155,6 +1202,11 @@ function GameCodeGate({
       {error && (
         <div className="toast-region error-message" role="alert">
           {error}
+        </div>
+      )}
+      {statusMessage && (
+        <div className="toast-region" role="status" aria-live="polite">
+          {statusMessage}
         </div>
       )}
       <section className="welcome-card" aria-labelledby="game-code-title">
@@ -1664,6 +1716,7 @@ function HostView({
   addFiveMinutes,
   addStop,
   addTask,
+  abandonGame,
   boardAssignments,
   expandedStopId,
   generateBoards,
@@ -1693,6 +1746,7 @@ function HostView({
   addFiveMinutes: () => void;
   addStop: () => void;
   addTask: () => void;
+  abandonGame: () => void;
   boardAssignments: BoardAssignment[];
   expandedStopId: string;
   generateBoards: () => void;
@@ -1770,6 +1824,14 @@ function HostView({
                 <Trash2 aria-hidden="true" />
                 Reset game
               </button>
+              <button
+                className="control-button danger is-critical"
+                type="button"
+                onClick={abandonGame}
+              >
+                <X aria-hidden="true" />
+                Abandon Game
+              </button>
             </>
           ) : (
             <>
@@ -1817,6 +1879,14 @@ function HostView({
               >
                 <Trash2 aria-hidden="true" />
                 Reset game
+              </button>
+              <button
+                className="control-button danger is-critical"
+                type="button"
+                onClick={abandonGame}
+              >
+                <X aria-hidden="true" />
+                Abandon Game
               </button>
             </>
           )}
@@ -3706,6 +3776,14 @@ function storePlayer(player: StoredPlayer) {
   }
 }
 
+function clearStoredPlayer() {
+  try {
+    window.localStorage.removeItem(STORAGE_PLAYER_KEY);
+  } catch {
+    // Local storage can be unavailable in private contexts.
+  }
+}
+
 function readOnboardingDismissed() {
   try {
     return window.localStorage.getItem(STORAGE_ONBOARDING_DISMISSED_KEY) === "true";
@@ -3735,6 +3813,14 @@ function readStoredGameCode() {
 function storeGameCode(code: string) {
   try {
     window.localStorage.setItem(STORAGE_GAME_CODE_KEY, code.trim().toUpperCase());
+  } catch {
+    // Local storage can be unavailable in private contexts.
+  }
+}
+
+function clearStoredGameCode() {
+  try {
+    window.localStorage.removeItem(STORAGE_GAME_CODE_KEY);
   } catch {
     // Local storage can be unavailable in private contexts.
   }

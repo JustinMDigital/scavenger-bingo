@@ -384,6 +384,29 @@ export async function resetGameProofs(gameId: string) {
   };
 }
 
+export async function abandonGameLobby(gameId: string) {
+  const resetResult = await resetGameProofs(gameId);
+  const client = requireSupabase();
+  const abandonResult = await client.rpc("abandon_game_lobby", {
+    target_game_id: gameId,
+  });
+
+  if (abandonResult.error) {
+    throw abandonResult.error;
+  }
+
+  if (!abandonResult.data) {
+    throw new Error("Abandon game did not return a result.");
+  }
+
+  return {
+    deletedImages: resetResult.deletedImages,
+    deletedSubmissions:
+      resetResult.deletedSubmissions + abandonResult.data.deleted_submissions,
+    removedMemberships: abandonResult.data.removed_memberships,
+  };
+}
+
 export async function addTask({
   gameId,
   slug,

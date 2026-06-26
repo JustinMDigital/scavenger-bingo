@@ -191,6 +191,16 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      abandon_game_lobby: {
+        Args: {
+          target_game_id: string;
+        };
+        Returns: {
+          closed_game_code: string;
+          deleted_submissions: number;
+          removed_memberships: number;
+        };
+      };
       configure_game_code: {
         Args: {
           desired_game_code: string;
