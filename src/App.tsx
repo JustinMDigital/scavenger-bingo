@@ -140,7 +140,24 @@ const DEFAULT_STOP_WINDOW_MINUTES = 30;
 const BOARD_SLOT_COUNT = 25;
 const BOARD_CENTER_SLOT = 13;
 const SHARED_GENERATED_TASK_COUNT = 4;
-const MAX_PROOF_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_PROOF_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_PROOF_FILE_MB = MAX_PROOF_FILE_BYTES / (1024 * 1024);
+const PROOF_IMAGE_EXTENSIONS = new Set(["heic", "heif", "jpeg", "jpg", "png", "webp"]);
+const PROOF_IMAGE_MIME_TYPES = new Set([
+  "image/heic",
+  "image/heif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+const PROOF_IMAGE_ACCEPT =
+  "image/heic,image/heif,image/jpeg,image/png,image/webp,.heic,.heif,.jpeg,.jpg,.png,.webp";
+const PROOF_RESIZED_IMAGE_TYPE = "image/jpeg";
+const PROOF_RESIZED_IMAGE_EXTENSION = "jpg";
+const PROOF_MAX_IMAGE_EDGE = 2000;
+const PROOF_COMPRESSION_QUALITIES = [0.82, 0.72, 0.62, 0.52];
+const GAME_CODE_PATTERN = /^[A-Z0-9-]{3,24}$/;
+const GAME_CODE_ERROR = "Game code must be 3-24 letters, numbers, or hyphens.";
 
 const ICONS: Record<string, LucideIcon> = {
   Armchair,
@@ -438,9 +455,17 @@ export default function App() {
   }
 
   async function handleJoin(request: JoinRequest) {
+    const cleanGameCode = normalizeGameCodeInput(request.gameCode);
+
+    if (!isValidGameCode(cleanGameCode)) {
+      setError(GAME_CODE_ERROR);
+      setToast("Check game code");
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const loadedState = await loadGameState(request.gameCode);
+      const loadedState = await loadGameState(cleanGameCode);
 
       if (loadedState.membership?.role === "host") {
         throw new Error(
@@ -476,7 +501,15 @@ export default function App() {
   }
 
   async function handleLoadGameCode(nextGameCode: string) {
-    const loadedState = await refreshGameState(nextGameCode);
+    const cleanGameCode = normalizeGameCodeInput(nextGameCode);
+
+    if (!isValidGameCode(cleanGameCode)) {
+      setError(GAME_CODE_ERROR);
+      setToast("Check game code");
+      return;
+    }
+
+    const loadedState = await refreshGameState(cleanGameCode);
 
     if (loadedState) {
       setToast(`Loaded ${loadedState.game.code}`);
@@ -486,10 +519,18 @@ export default function App() {
   }
 
   async function handleClaimHost(request: HostClaimRequest) {
+    const cleanGameCode = normalizeGameCodeInput(request.gameCode);
+
+    if (!isValidGameCode(cleanGameCode)) {
+      setError(GAME_CODE_ERROR);
+      setToast("Check game code");
+      return;
+    }
+
     setIsLoading(true);
     try {
-      await claimHost(request);
-      const nextState = await refreshGameState(request.gameCode, { silent: true });
+      await claimHost({ ...request, gameCode: cleanGameCode });
+      const nextState = await refreshGameState(cleanGameCode, { silent: true });
       if (nextState) {
         storeGameCode(nextState.game.code);
         setGameCode(nextState.game.code);
@@ -514,29 +555,48 @@ export default function App() {
       return;
     }
 
-    if (file.type && !file.type.startsWith("image/")) {
-      setToast("Choose an image file");
+    const boardTask = currentGroupTasks.find((task) => task.id === taskId) ?? null;
+
+    if (!boardTask) {
+      setToast("Task is no longer on your board");
       return;
     }
 
-    if (file.size > MAX_PROOF_FILE_BYTES) {
-      setToast("Photo must be under 20 MB");
+    if (boardTask.free) {
+      setToast("Free squares do not need photos");
+      return;
+    }
+
+    if (!isAllowedProofImageFile(file)) {
+      setToast("Choose a JPG, PNG, WebP, HEIC, or HEIF image");
+      return;
+    }
+
+    if (file.size <= 0) {
+      setToast("Choose a non-empty image");
       return;
     }
 
     setUploadingTaskId(taskId);
     try {
+      if (file.size > MAX_PROOF_FILE_BYTES) {
+        setToast("Compressing photo...");
+      }
+
+      const proofFile = await prepareProofImageFile(file);
+
       await saveTaskProof({
         gameId: gameState.game.id,
         groupId: membership.groupId,
         taskId,
-        file,
+        file: proofFile,
       });
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast("Photo sent");
+      setToast(proofFile === file ? "Photo sent" : "Photo compressed and sent");
     } catch (caughtError) {
-      setError(getErrorMessage(caughtError));
-      setToast("Upload failed");
+      const message = getErrorMessage(caughtError);
+      setError(message);
+      setToast(isProofPreparationError(message) ? "Photo is too large" : "Upload failed");
     } finally {
       setUploadingTaskId("");
     }
@@ -1325,6 +1385,7 @@ function GameCodeGate({
             <input
               autoCapitalize="characters"
               autoComplete="off"
+              maxLength={24}
               value={gameCode}
               onChange={(event) => setGameCode(event.target.value.toUpperCase())}
               placeholder="FAMILY-2026"
@@ -1518,6 +1579,7 @@ function JoinView({
           <input
             autoCapitalize="characters"
             autoComplete="off"
+            maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
             placeholder="FAMILY-2026"
@@ -1621,6 +1683,7 @@ function HostGate({
           <input
             autoCapitalize="characters"
             autoComplete="off"
+            maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
             placeholder="FAMILY-2026"
@@ -3150,7 +3213,7 @@ function SelectedTaskCard({
             className="file-input-hidden"
             id={`${inputId}-camera`}
             type="file"
-            accept="image/*"
+            accept={PROOF_IMAGE_ACCEPT}
             capture="environment"
             onChange={handleFileChange}
           />
@@ -3159,7 +3222,7 @@ function SelectedTaskCard({
             className="file-input-hidden"
             id={`${inputId}-upload`}
             type="file"
-            accept="image/*"
+            accept={PROOF_IMAGE_ACCEPT}
             onChange={handleFileChange}
           />
           <button
@@ -3689,6 +3752,14 @@ function createTaskSlug(title: string, existingTaskIds: string[]) {
   return `${baseSlug}-${Date.now()}`;
 }
 
+function normalizeGameCodeInput(gameCode: string) {
+  return gameCode.trim().toUpperCase();
+}
+
+function isValidGameCode(gameCode: string) {
+  return GAME_CODE_PATTERN.test(gameCode);
+}
+
 function generateGroupBoards(groups: Group[], tasks: Task[]) {
   const sortedTasks = getSortedTasks(tasks);
   const freeTask = sortedTasks.find((task) => task.free) ?? null;
@@ -3797,6 +3868,134 @@ function getStatusLabel(status: TaskStatus) {
 
 function getProofCountLabel(count: number) {
   return count === 1 ? "1 proof" : `${count} proofs`;
+}
+
+function isAllowedProofImageFile(file: File) {
+  if (file.type) {
+    return PROOF_IMAGE_MIME_TYPES.has(file.type.toLowerCase());
+  }
+
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return PROOF_IMAGE_EXTENSIONS.has(extension);
+}
+
+async function prepareProofImageFile(file: File) {
+  if (file.size <= MAX_PROOF_FILE_BYTES) {
+    return file;
+  }
+
+  const compressedFile = await compressProofImageFile(file);
+
+  if (compressedFile.size <= MAX_PROOF_FILE_BYTES) {
+    return compressedFile;
+  }
+
+  throw new Error(
+    `Photo is still over ${MAX_PROOF_FILE_MB} MB after compression. Try a smaller photo.`,
+  );
+}
+
+async function compressProofImageFile(file: File) {
+  const image = await loadImageFromFile(file);
+  const scale = Math.min(1, PROOF_MAX_IMAGE_EDGE / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("This browser could not prepare the photo for upload.");
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+
+  let smallestFile: File | null = null;
+
+  for (const quality of PROOF_COMPRESSION_QUALITIES) {
+    const blob = await canvasToBlob(canvas, PROOF_RESIZED_IMAGE_TYPE, quality);
+    const nextFile = new File([blob], getCompressedProofFilename(file.name), {
+      type: PROOF_RESIZED_IMAGE_TYPE,
+      lastModified: Date.now(),
+    });
+
+    if (!smallestFile || nextFile.size < smallestFile.size) {
+      smallestFile = nextFile;
+    }
+
+    if (nextFile.size <= MAX_PROOF_FILE_BYTES) {
+      return nextFile;
+    }
+  }
+
+  if (!smallestFile) {
+    throw new Error("This browser could not compress the photo.");
+  }
+
+  return smallestFile;
+}
+
+function loadImageFromFile(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new window.Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(
+        new Error(
+          `Photo is over ${MAX_PROOF_FILE_MB} MB and this browser could not compress it.`,
+        ),
+      );
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality: number,
+) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+          return;
+        }
+
+        reject(new Error("This browser could not compress the photo."));
+      },
+      type,
+      quality,
+    );
+  });
+}
+
+function getCompressedProofFilename(filename: string) {
+  const cleanBaseName =
+    filename
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[^a-z0-9._-]+/gi, "-")
+      .replace(/^-+|-+$/g, "") || "proof";
+
+  return `${cleanBaseName}-compressed.${PROOF_RESIZED_IMAGE_EXTENSION}`;
+}
+
+function isProofPreparationError(message: string) {
+  return (
+    message.includes("compress") ||
+    message.includes("over") ||
+    message.includes("smaller photo")
+  );
 }
 
 function replaceMembership(gameState: GameState, membership: Membership): GameState {

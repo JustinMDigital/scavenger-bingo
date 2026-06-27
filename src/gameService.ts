@@ -147,6 +147,10 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
     .single();
 
   if (gameResult.error) {
+    if (gameResult.error.code === "PGRST116") {
+      throw new Error(`No active game found for ${normalizedCode}.`);
+    }
+
     throw gameResult.error;
   }
 
