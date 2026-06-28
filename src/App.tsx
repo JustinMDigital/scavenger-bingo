@@ -17,6 +17,8 @@ import {
   CupSoda,
   Dog,
   Droplets,
+  Eye,
+  EyeOff,
   FerrisWheel,
   Fish,
   Flag,
@@ -33,6 +35,7 @@ import {
   Landmark,
   Leaf,
   List,
+  Lock,
   Mailbox,
   Martini,
   Play,
@@ -110,6 +113,7 @@ import type {
   HuntPhase,
   HuntStop,
   Membership,
+  RosterMember,
   Submission,
   SubmissionStatus,
   Task,
@@ -160,7 +164,12 @@ type HostClaimRequest = {
 type LocalGamePatch = Partial<
   Pick<
     Game,
-    "activeStopId" | "phase" | "timerRunning" | "timerStartedAt" | "timerSecondsTotal"
+    | "activeStopId"
+    | "phase"
+    | "timerRunning"
+    | "timerStartedAt"
+    | "timerSecondsTotal"
+    | "boardHidden"
   >
 >;
 
@@ -461,6 +470,7 @@ export default function App() {
   const stops = gameState?.stops ?? [];
   const submissions = gameState?.submissions ?? [];
   const memberships = gameState?.memberships ?? [];
+  const roster = gameState?.roster ?? [];
   const membership = gameState?.membership ?? null;
   const currentGroup =
     membership?.role === "player"
@@ -559,6 +569,9 @@ export default function App() {
             : {}),
           ...(patch.timerSecondsTotal !== undefined
             ? { timerSecondsTotal: patch.timerSecondsTotal }
+            : {}),
+          ...(patch.boardHidden !== undefined
+            ? { boardHidden: patch.boardHidden }
             : {}),
         },
       };
@@ -746,6 +759,11 @@ export default function App() {
   async function handleSubmitProof(taskId: string, file: File) {
     if (!gameState || membership?.role !== "player" || !membership.groupId) {
       setToast("Join a group first");
+      return;
+    }
+
+    if (gameState.game.boardHidden) {
+      setToast("Board is hidden until the host starts the hunt");
       return;
     }
 
@@ -972,11 +990,12 @@ export default function App() {
     try {
       const resetResult = await resetGameProofs(gameState.game.id);
       await updateGameTimer(gameState.game.id, {
-        activeStopId: firstStop?.id ?? null,
-        phase: "live",
+        activeStopId: null,
+        phase: "play",
         timerRunning: false,
         timerStartedAt: new Date().toISOString(),
         timerSecondsTotal: 0,
+        boardHidden: true,
       });
       await refreshGameState(gameState.game.code, { silent: true });
       setExpandedStopId(firstStop?.id ?? "");
@@ -1308,10 +1327,23 @@ export default function App() {
         phase: "live",
         timerRunning: true,
         timerStartedAt: new Date().toISOString(),
+        ...(gameState.game.boardHidden ? { boardHidden: false } : {}),
       },
       { failureToast: "Stop phase changed locally" },
     );
     setExpandedStopId(stop.id);
+  }
+
+  async function handleSetBoardHidden(boardHidden: boolean) {
+    await syncGameTimer(
+      { boardHidden },
+      {
+        successToast: boardHidden ? "Board hidden" : "Board visible",
+        failureToast: boardHidden
+          ? "Board hidden locally"
+          : "Board shown locally",
+      },
+    );
   }
 
   async function handleNextStop() {
@@ -1459,6 +1491,7 @@ export default function App() {
               resetGameProofs={handleResetGameProofs}
               setSelectedHostGroupId={setSelectedHostGroupId}
               setSubmissionStatus={handleSubmissionStatus}
+              setBoardHidden={handleSetBoardHidden}
               stops={stops}
               submissions={submissions}
               tasks={tasks}
@@ -1484,6 +1517,8 @@ export default function App() {
           <GroupView
             boardView={boardView}
             group={currentGroup}
+            groups={groups}
+            isBoardHidden={gameState.game.boardHidden}
             isTaskCardDismissed={isTaskCardDismissed}
             isOnboardingDismissed={isOnboardingDismissed}
             playerUserId={membership.userId}
@@ -1494,6 +1529,7 @@ export default function App() {
             onSubmitProof={handleSubmitProof}
             onTaskSelect={handleTaskSelect}
             pendingProofs={currentPendingProofs}
+            roster={roster}
             retryingProofId={retryingProofId}
             selectedTask={selectedTask}
             submissions={submissions}
@@ -2116,6 +2152,8 @@ function HostGate({
 function GroupView({
   boardView,
   group,
+  groups,
+  isBoardHidden,
   isTaskCardDismissed,
   isOnboardingDismissed,
   playerUserId,
@@ -2126,6 +2164,7 @@ function GroupView({
   onSubmitProof,
   onTaskSelect,
   pendingProofs,
+  roster,
   retryingProofId,
   selectedTask,
   submissions,
@@ -2134,6 +2173,8 @@ function GroupView({
 }: {
   boardView: BoardView;
   group: Group;
+  groups: Group[];
+  isBoardHidden: boolean;
   isTaskCardDismissed: boolean;
   isOnboardingDismissed: boolean;
   playerUserId: string;
@@ -2144,6 +2185,7 @@ function GroupView({
   onSubmitProof: (taskId: string, file: File) => void;
   onTaskSelect: (taskId: string) => void;
   pendingProofs: PendingProofUpload[];
+  roster: RosterMember[];
   retryingProofId: string;
   selectedTask: Task | null;
   submissions: Submission[];
@@ -2174,7 +2216,7 @@ function GroupView({
   );
   const isBlackout = hasTasks && approvedCount === tasks.length;
   const showOnboardingHint =
-    hasTasks && !hasSubmittedProofs && !isOnboardingDismissed;
+    hasTasks && !isBoardHidden && !hasSubmittedProofs && !isOnboardingDismissed;
 
   return (
     <div className="view-stack group-view">
@@ -2182,7 +2224,7 @@ function GroupView({
         <PlayerOnboardingHint onDismiss={onOnboardingDismiss} />
       )}
 
-      {isBlackout && (
+      {!isBoardHidden && isBlackout && (
         <section className="blackout-banner">
           <Check aria-hidden="true" />
           <div>
@@ -2192,7 +2234,7 @@ function GroupView({
         </section>
       )}
 
-      {pendingProofs.length > 0 && (
+      {!isBoardHidden && pendingProofs.length > 0 && (
         <PendingProofNotice
           onRetryPendingProof={onRetryPendingProof}
           pendingProofs={pendingProofs}
@@ -2202,74 +2244,80 @@ function GroupView({
         />
       )}
 
-      <section aria-labelledby="board-heading">
-        <div className="section-heading">
-          <div>
-            <p className="label">Blackout card</p>
-            <h2 id="board-heading">
-              {hasTasks ? `${completedCount} of ${tasks.length} sent` : "Board not ready"}
-            </h2>
-          </div>
-          <span>
-            {pendingProofs.length > 0
-              ? `${pendingProofs.length} saved to retry`
-              : hasTasks
-                ? `${approvedCount} approved`
-                : "Ask host"}
-          </span>
-        </div>
-
-        {hasTasks ? (
-          <>
-            <div className="board-view-toggle" aria-label="Choose board view">
-              <button
-                className={boardView === "grid" ? "is-active" : ""}
-                type="button"
-                onClick={() => onBoardViewChange("grid")}
-              >
-                <Grid3X3 aria-hidden="true" />
-                Board
-              </button>
-              <button
-                className={boardView === "list" ? "is-active" : ""}
-                type="button"
-                onClick={() => onBoardViewChange("list")}
-              >
-                <List aria-hidden="true" />
-                List
-              </button>
+      {isBoardHidden ? (
+        <BoardHiddenRoster groups={groups} roster={roster} />
+      ) : (
+        <section aria-labelledby="board-heading">
+          <div className="section-heading">
+            <div>
+              <p className="label">Blackout card</p>
+              <h2 id="board-heading">
+                {hasTasks
+                  ? `${completedCount} of ${tasks.length} sent`
+                  : "Board not ready"}
+              </h2>
             </div>
-
-            {boardView === "grid" ? (
-              <TaskBoard
-                groupId={group.id}
-                onTaskSelect={onTaskSelect}
-                pendingProofTaskIds={pendingProofTaskIds}
-                selectedTaskId={selectedTask?.id ?? ""}
-                submissions={submissions}
-                tasks={tasks}
-              />
-            ) : (
-              <TaskList
-                groupId={group.id}
-                onTaskSelect={onTaskSelect}
-                pendingProofTaskIds={pendingProofTaskIds}
-                selectedTaskId={selectedTask?.id ?? ""}
-                submissions={submissions}
-                tasks={tasks}
-              />
-            )}
-          </>
-        ) : (
-          <div className="empty-state player-board-empty">
-            <Grid3X3 aria-hidden="true" />
-            <strong>Waiting for the board</strong>
-            <p>The host still needs to add tasks or generate boards for your group.</p>
+            <span>
+              {pendingProofs.length > 0
+                ? `${pendingProofs.length} saved to retry`
+                : hasTasks
+                  ? `${approvedCount} approved`
+                  : "Ask host"}
+            </span>
           </div>
-        )}
-      </section>
 
-      {selectedTask && !isTaskCardDismissed && (
+          {hasTasks ? (
+            <>
+              <div className="board-view-toggle" aria-label="Choose board view">
+                <button
+                  className={boardView === "grid" ? "is-active" : ""}
+                  type="button"
+                  onClick={() => onBoardViewChange("grid")}
+                >
+                  <Grid3X3 aria-hidden="true" />
+                  Board
+                </button>
+                <button
+                  className={boardView === "list" ? "is-active" : ""}
+                  type="button"
+                  onClick={() => onBoardViewChange("list")}
+                >
+                  <List aria-hidden="true" />
+                  List
+                </button>
+              </div>
+
+              {boardView === "grid" ? (
+                <TaskBoard
+                  groupId={group.id}
+                  onTaskSelect={onTaskSelect}
+                  pendingProofTaskIds={pendingProofTaskIds}
+                  selectedTaskId={selectedTask?.id ?? ""}
+                  submissions={submissions}
+                  tasks={tasks}
+                />
+              ) : (
+                <TaskList
+                  groupId={group.id}
+                  onTaskSelect={onTaskSelect}
+                  pendingProofTaskIds={pendingProofTaskIds}
+                  selectedTaskId={selectedTask?.id ?? ""}
+                  submissions={submissions}
+                  tasks={tasks}
+                />
+              )}
+            </>
+          ) : (
+            <div className="empty-state player-board-empty">
+              <Grid3X3 aria-hidden="true" />
+              <strong>Waiting for the board</strong>
+              <p>The host still needs to add tasks or generate boards for your group.</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {!isBoardHidden && selectedTask && !isTaskCardDismissed && (
         <SelectedTaskCard
           key={selectedTask.id}
           groupId={group.id}
@@ -2286,6 +2334,75 @@ function GroupView({
         />
       )}
     </div>
+  );
+}
+
+function BoardHiddenRoster({
+  groups,
+  roster,
+}: {
+  groups: Group[];
+  roster: RosterMember[];
+}) {
+  const playersByGroup = useMemo(() => {
+    const groupedRoster = new Map<string, RosterMember[]>();
+
+    groups.forEach((group) => {
+      groupedRoster.set(group.id, []);
+    });
+
+    roster.forEach((member) => {
+      if (member.role !== "player" || !member.groupId) {
+        return;
+      }
+
+      groupedRoster.get(member.groupId)?.push(member);
+    });
+
+    return groupedRoster;
+  }, [groups, roster]);
+  const playerCount = roster.filter((member) => member.role === "player").length;
+
+  return (
+    <section className="board-hidden-panel" aria-labelledby="board-hidden-title">
+      <div className="board-hidden-header">
+        <Lock aria-hidden="true" />
+        <div>
+          <p className="label">Teams waiting</p>
+          <h2 id="board-hidden-title">Waiting for the host</h2>
+          <p>
+            {playerCount === 1
+              ? "1 player is checked in."
+              : `${playerCount} players are checked in.`}
+          </p>
+        </div>
+      </div>
+
+      <div className="waiting-team-list">
+        {groups.map((group) => {
+          const players = playersByGroup.get(group.id) ?? [];
+
+          return (
+            <article
+              key={group.id}
+              className="waiting-team-row"
+              style={{ "--group-color": group.color } as React.CSSProperties}
+            >
+              <span className="waiting-team-mark" aria-hidden="true" />
+              <div>
+                <strong>{group.shortName}</strong>
+                <span className={players.length === 0 ? "is-empty" : ""}>
+                  {players.length > 0
+                    ? players.map((player) => player.displayName).join(", ")
+                    : "No one joined yet"}
+                </span>
+              </div>
+              <em>{players.length}</em>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -2384,6 +2501,7 @@ function HostView({
   saveGroupBoard,
   selectedHostGroupId,
   setExpandedStopId,
+  setBoardHidden,
   setHuntPhase,
   setSelectedHostGroupId,
   setSubmissionStatus,
@@ -2418,6 +2536,7 @@ function HostView({
   saveGroupBoard: (groupId: string, taskIds: string[]) => void;
   selectedHostGroupId: string;
   setExpandedStopId: (stopId: string) => void;
+  setBoardHidden: (boardHidden: boolean) => void;
   setHuntPhase: (phase: HuntPhase) => void;
   setSelectedHostGroupId: (groupId: string) => void;
   setSubmissionStatus: (submissionId: string, status: Submission["status"]) => void;
@@ -2474,6 +2593,19 @@ function HostView({
                 Return to schedule
               </button>
               <button
+                aria-pressed={!game.boardHidden}
+                className={game.boardHidden ? "control-button primary" : "control-button"}
+                type="button"
+                onClick={() => setBoardHidden(!game.boardHidden)}
+              >
+                {game.boardHidden ? (
+                  <Eye aria-hidden="true" />
+                ) : (
+                  <EyeOff aria-hidden="true" />
+                )}
+                {game.boardHidden ? "Show board" : "Hide board"}
+              </button>
+              <button
                 className="control-button danger"
                 type="button"
                 onClick={resetGameProofs}
@@ -2495,6 +2627,19 @@ function HostView({
               <button className="control-button" type="button" onClick={addFiveMinutes}>
                 <Clock aria-hidden="true" />
                 +5 min
+              </button>
+              <button
+                aria-pressed={!game.boardHidden}
+                className={game.boardHidden ? "control-button primary" : "control-button"}
+                type="button"
+                onClick={() => setBoardHidden(!game.boardHidden)}
+              >
+                {game.boardHidden ? (
+                  <Eye aria-hidden="true" />
+                ) : (
+                  <EyeOff aria-hidden="true" />
+                )}
+                {game.boardHidden ? "Show board" : "Hide board"}
               </button>
               <button
                 className="control-button"

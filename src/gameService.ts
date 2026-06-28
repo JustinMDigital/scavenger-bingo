@@ -14,6 +14,8 @@ type BoardAssignmentRow =
 type StopRow = Database["public"]["Tables"]["stops"]["Row"];
 type MembershipRow = Database["public"]["Tables"]["memberships"]["Row"];
 type SubmissionRow = Database["public"]["Tables"]["submissions"]["Row"];
+type RosterRow =
+  Database["public"]["Functions"]["get_game_roster"]["Returns"][number];
 
 export type SubmissionStatus = "pending" | "approved" | "retake";
 export type TaskStatus = "ready" | "pending" | "approved" | "retake";
@@ -61,12 +63,21 @@ export type Game = {
   timerRunning: boolean;
   timerStartedAt: string;
   timerSecondsTotal: number;
+  boardHidden: boolean;
 };
 
 export type Membership = {
   id: string;
   gameId: string;
   userId: string;
+  role: "player" | "host";
+  groupId: string | null;
+  displayName: string;
+};
+
+export type RosterMember = {
+  id: string;
+  gameId: string;
   role: "player" | "host";
   groupId: string | null;
   displayName: string;
@@ -94,6 +105,7 @@ export type GameState = {
   stops: HuntStop[];
   membership: Membership | null;
   memberships: Membership[];
+  roster: RosterMember[];
   submissions: Submission[];
 };
 
@@ -193,10 +205,14 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
     membership?.role === "host"
       ? loadGameMemberships(game.id)
       : Promise.resolve(membership ? [membership] : []);
-  const [boardAssignments, submissions, memberships] = await Promise.all([
+  const rosterPromise = membership
+    ? loadGameRoster(game.id)
+    : Promise.resolve<RosterMember[]>([]);
+  const [boardAssignments, submissions, memberships, roster] = await Promise.all([
     loadBoardAssignments(game.id),
     membership ? loadSubmissionsForMembership(game.id, membership) : [],
     membershipsPromise,
+    rosterPromise,
   ]);
 
   return {
@@ -207,6 +223,7 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
     stops: stopsResult.data.map(mapStop),
     membership,
     memberships,
+    roster,
     submissions,
   };
 }
@@ -671,6 +688,7 @@ export async function updateGameTimer(
     timerRunning: boolean;
     timerStartedAt: string;
     timerSecondsTotal: number;
+    boardHidden: boolean;
   }>,
 ) {
   const client = requireSupabase();
@@ -684,6 +702,9 @@ export async function updateGameTimer(
   }
   if (patch.timerSecondsTotal !== undefined) {
     updates.timer_seconds_total = patch.timerSecondsTotal;
+  }
+  if (patch.boardHidden !== undefined) {
+    updates.board_hidden = patch.boardHidden;
   }
 
   const result = await client
@@ -939,6 +960,17 @@ async function loadGameMemberships(gameId: string) {
   return result.data.map(mapMembership);
 }
 
+async function loadGameRoster(gameId: string) {
+  const client = requireSupabase();
+  const result = await client.rpc("get_game_roster", { target_game_id: gameId });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return result.data.map(mapRosterMember);
+}
+
 async function hydrateSubmissions(rows: SubmissionRow[]) {
   const client = requireSupabase();
   const submittedByIds = [...new Set(rows.map((row) => row.submitted_by))];
@@ -1034,6 +1066,7 @@ function mapGame(row: GameRow): Game {
     timerRunning: row.timer_running,
     timerStartedAt: row.timer_started_at,
     timerSecondsTotal: row.timer_seconds_total,
+    boardHidden: row.board_hidden,
   };
 }
 
@@ -1083,6 +1116,16 @@ function mapMembership(row: MembershipRow): Membership {
     id: row.id,
     gameId: row.game_id,
     userId: row.user_id,
+    role: row.role,
+    groupId: row.group_slug,
+    displayName: row.display_name,
+  };
+}
+
+function mapRosterMember(row: RosterRow): RosterMember {
+  return {
+    id: row.id,
+    gameId: row.game_id,
     role: row.role,
     groupId: row.group_slug,
     displayName: row.display_name,

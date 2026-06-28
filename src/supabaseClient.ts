@@ -22,6 +22,7 @@ export type Database = {
           timer_running: boolean;
           timer_started_at: string;
           timer_seconds_total: number;
+          board_hidden: boolean;
           is_active: boolean;
           created_at: string;
           updated_at: string;
@@ -35,6 +36,7 @@ export type Database = {
           timer_running?: boolean;
           timer_started_at?: string;
           timer_seconds_total?: number;
+          board_hidden?: boolean;
           is_active?: boolean;
           created_at?: string;
           updated_at?: string;
@@ -221,6 +223,18 @@ export type Database = {
           target_membership_id: string;
         };
         Returns: Database["public"]["Tables"]["memberships"]["Row"];
+      };
+      get_game_roster: {
+        Args: {
+          target_game_id: string;
+        };
+        Returns: Array<{
+          id: string;
+          game_id: string;
+          role: "player" | "host";
+          group_slug: string | null;
+          display_name: string;
+        }>;
       };
       claim_host: {
         Args: {
