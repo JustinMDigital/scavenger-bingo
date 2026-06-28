@@ -809,8 +809,8 @@ img {
   position: relative;
   display: grid;
   min-width: 0;
-  min-height: 4.25rem;
-  grid-template-rows: 1.35rem minmax(1.65rem, auto);
+  min-height: 4.45rem;
+  grid-template-rows: 1.32rem 1.55rem;
   align-content: center;
   justify-items: center;
   gap: 0.1rem;
@@ -872,11 +872,11 @@ img {
   max-width: 100%;
   overflow: hidden;
   color: var(--ink);
-  font-size: clamp(0.58rem, 2.45vw, 0.69rem);
+  font-size: clamp(0.56rem, 2.3vw, 0.67rem);
   font-weight: 850;
-  line-height: 1.08;
+  line-height: 1.06;
   text-align: center;
-  text-wrap: balance;
+  text-wrap: auto;
   overflow-wrap: normal;
   word-break: normal;
   -webkit-box-orient: vertical;

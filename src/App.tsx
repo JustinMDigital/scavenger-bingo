@@ -175,7 +175,11 @@ const DEFAULT_PLAY_WINDOW_MINUTES = 30;
 const DEFAULT_STOP_WINDOW_MINUTES = 30;
 const BOARD_SLOT_COUNT = 25;
 const BOARD_CENTER_SLOT = 13;
+const BOARD_CENTER_TASK_ID = "team-jello-shot";
 const SHARED_GENERATED_TASK_COUNT = 4;
+const HARD_GENERATED_TASK_COUNT = 3;
+const HARD_GENERATED_SLOT_NUMBERS = new Set([7, 16, 23]);
+const HARD_GENERATED_SORT_ORDER_MIN = 37;
 const MAX_PROOF_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_PROOF_FILE_MB = MAX_PROOF_FILE_BYTES / (1024 * 1024);
 const PROOF_IMAGE_EXTENSIONS = new Set(["heic", "heif", "jpeg", "jpg", "png", "webp"]);
@@ -253,6 +257,50 @@ const ICONS: Record<string, LucideIcon> = {
 const TASK_ICON_OPTIONS = Object.keys(ICONS).sort((first, second) =>
   first.localeCompare(second),
 );
+
+const BOARD_TILE_TITLES: Record<string, string> = {
+  "22nd-street-pizza-box": "Pizza Box",
+  "22nd-street-pizza-delivery": "Pizza Delivery",
+  "28th-street-benches": "28th Benches",
+  "2807-flag-salute": "Flag Salute",
+  "arcade-tickets": "Arcade Tickets",
+  "balboa-bar-or-frozen-banana": "Balboa Bar",
+  "balboa-fun-zone-ferris-wheel": "Ferris Wheel",
+  "balboa-island-ferry-sign": "Ferry Sign",
+  "balboa-pavilion-sign": "Pavilion Sign",
+  "balboa-pier": "Balboa Pier",
+  "beach-volleyball-court": "Volleyball",
+  "chargers-or-rams-shirt": "LA NFL Shirt",
+  "college-shirt": "College Shirt",
+  "dont-look-up-sign": "Look Up Sign",
+  "dory-fleet-sign": "Dory Fleet",
+  "enjoy-a-slice": "Enjoy A Slice",
+  "ferris-wheel-ticket-booth": "Ferris Tickets",
+  "figure-8s": "Figure 8s",
+  "flying-blue-discs": "Blue Discs",
+  "friendly-pelican": "Pelican",
+  "grab-a-piece-of-candy": "Candy",
+  "hero-who-did-go": "Hero Sign",
+  "italian-restaurant": "Italian Food",
+  "kids-lighthouse": "Kids Lighthouse",
+  "lifeguard-donor-wall": "Donor Wall",
+  "lifeguard-truck": "Lifeguard Truck",
+  "mexican-food-restaurant": "Mexican Food",
+  "newport-elementary-sign": "School Sign",
+  "newport-pier": "Newport Pier",
+  "newport-trolley-stop": "Trolley Stop",
+  "non-pier-restroom": "Restroom",
+  "playground-hopscotch": "Hopscotch",
+  "public-fire-ring": "Fire Ring",
+  "random-act-of-kindness": "Kindness",
+  "selfie-with-a-dog": "Dog Selfie",
+  "striped-beach-towel": "Beach Towel",
+  "team-drink-break": "Drink Break",
+  "team-jello-shot": "Jello Shot",
+  "team-pyramid": "Team Pyramid",
+  "tommy-bahama-umbrella": "Tommy Umbrella",
+  "usa-soccer-fan": "USA Soccer Fan",
+};
 
 export default function App() {
   const storedPlayer = useMemo(() => readStoredPlayer(), []);
@@ -3350,6 +3398,7 @@ function TaskTile({
 }) {
   const status = getTaskStatus(task, groupId, submissions);
   const Icon = ICONS[task.icon] ?? Circle;
+  const compactTitle = getBoardTileTitle(task);
   const showSavedState = status === "ready" && hasPendingProof;
 
   return (
@@ -3363,12 +3412,16 @@ function TaskTile({
         .filter(Boolean)
         .join(" ")}
       disabled={!onTaskSelect}
+      aria-label={`${task.title}. ${task.description}`}
       role="listitem"
+      title={task.title}
       type="button"
       onClick={() => onTaskSelect?.(task.id)}
     >
       <Icon className="task-icon" aria-hidden="true" />
-      <span className="task-title">{task.title}</span>
+      <span className="task-title" aria-hidden="true">
+        {compactTitle}
+      </span>
       {(status !== "ready" || showSavedState) && (
         <span
           key={showSavedState ? "saved" : status}
@@ -4162,25 +4215,41 @@ function isValidGameCode(gameCode: string) {
   return GAME_CODE_PATTERN.test(gameCode);
 }
 
+function getBoardTileTitle(task: Task) {
+  return BOARD_TILE_TITLES[task.id] ?? task.title;
+}
+
 function generateGroupBoards(groups: Group[], tasks: Task[]) {
   const sortedTasks = getSortedTasks(tasks);
-  const freeTask = sortedTasks.find((task) => task.free) ?? null;
-  const nonFreeTasks = sortedTasks.filter((task) => !task.free);
-  const sharedTasks = nonFreeTasks.slice(
-    0,
-    Math.min(SHARED_GENERATED_TASK_COUNT, nonFreeTasks.length),
+  const centerTask =
+    sortedTasks.find((task) => task.id === BOARD_CENTER_TASK_ID) ??
+    sortedTasks.find((task) => task.free) ??
+    null;
+  const nonFreeTasks = sortedTasks.filter(
+    (task) => !task.free && task.id !== centerTask?.id,
   );
-  const variedPool = nonFreeTasks.filter(
+  const hardTasks = nonFreeTasks.filter(
+    (task) => task.sortOrder >= HARD_GENERATED_SORT_ORDER_MIN,
+  );
+  const nonHardTasks = nonFreeTasks.filter(
+    (task) => task.sortOrder < HARD_GENERATED_SORT_ORDER_MIN,
+  );
+  const sharedTasks = nonHardTasks.slice(
+    0,
+    Math.min(SHARED_GENERATED_TASK_COUNT, nonHardTasks.length),
+  );
+  const variedPool = nonHardTasks.filter(
     (task) => !sharedTasks.some((sharedTask) => sharedTask.id === task.id),
   );
 
   return groups.reduce<Record<string, string[]>>((boards, group) => {
     const boardTaskIds = Array.from({ length: BOARD_SLOT_COUNT }, () => "");
     const shuffledTasks = stableShuffleTasks(variedPool, group.id);
+    const shuffledHardTasks = stableShuffleTasks(hardTasks, `${group.id}:hard`);
     const taskIds = [
       ...sharedTasks.map((task) => task.id),
       ...shuffledTasks.map((task) => task.id),
-      ...nonFreeTasks
+      ...nonHardTasks
         .filter(
           (task) =>
             !sharedTasks.some((sharedTask) => sharedTask.id === task.id) &&
@@ -4189,12 +4258,22 @@ function generateGroupBoards(groups: Group[], tasks: Task[]) {
         .map((task) => task.id),
     ];
     let taskIndex = 0;
+    let hardTaskIndex = 0;
 
     boardTaskIds.forEach((_, index) => {
       const slotNumber = index + 1;
 
-      if (freeTask && slotNumber === BOARD_CENTER_SLOT) {
-        boardTaskIds[index] = freeTask.id;
+      if (centerTask && slotNumber === BOARD_CENTER_SLOT) {
+        boardTaskIds[index] = centerTask.id;
+        return;
+      }
+
+      if (
+        HARD_GENERATED_SLOT_NUMBERS.has(slotNumber) &&
+        hardTaskIndex < Math.min(HARD_GENERATED_TASK_COUNT, shuffledHardTasks.length)
+      ) {
+        boardTaskIds[index] = shuffledHardTasks[hardTaskIndex].id;
+        hardTaskIndex += 1;
         return;
       }
 
