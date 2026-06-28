@@ -331,6 +331,8 @@ export default function App() {
   const [pendingProofs, setPendingProofs] = useState<PendingProofUpload[]>([]);
   const [movingMembershipId, setMovingMembershipId] = useState("");
   const [kickingMembershipId, setKickingMembershipId] = useState("");
+  const [isAbandonDialogOpen, setIsAbandonDialogOpen] = useState(false);
+  const [isAbandoningGame, setIsAbandoningGame] = useState(false);
 
   const refreshGameState = useCallback(
     async (code = gameCode, options?: { silent?: boolean }) => {
@@ -989,22 +991,23 @@ export default function App() {
     }
   }
 
-  async function handleAbandonGame() {
+  function handleAbandonGame() {
     if (!gameState || membership?.role !== "host") return;
 
-    const confirmation = window.prompt(
-      "Type ABANDON to remove every player and host, delete submitted proofs, close this game code, and return to host setup. This cannot be undone.",
-    );
+    setError("");
+    setIsAbandonDialogOpen(true);
+  }
 
-    if (confirmation !== "ABANDON") {
-      return;
-    }
+  async function handleConfirmAbandonGame() {
+    if (!gameState || membership?.role !== "host") return;
 
+    setIsAbandoningGame(true);
     setIsLoading(true);
     try {
       const abandonResult = await abandonGameLobby(gameState.game.id);
       clearStoredGameCode();
       clearStoredPlayer();
+      setIsAbandonDialogOpen(false);
       setGameCode("");
       setGameState(null);
       setSelectedTaskId("");
@@ -1019,6 +1022,7 @@ export default function App() {
       setError(message);
       setToast(`Abandon failed: ${message}`);
     } finally {
+      setIsAbandoningGame(false);
       setIsLoading(false);
     }
   }
@@ -1508,6 +1512,15 @@ export default function App() {
         )}
       </main>
 
+      {isAbandonDialogOpen && membership?.role === "host" && gameState && (
+        <AbandonGameDialog
+          gameCode={gameState.game.code}
+          isBusy={isAbandoningGame}
+          onCancel={() => setIsAbandonDialogOpen(false)}
+          onConfirm={() => void handleConfirmAbandonGame()}
+        />
+      )}
+
       <div className="toast-region" role="status" aria-live="polite">
         {toast}
       </div>
@@ -1537,6 +1550,112 @@ function HostSessionNotice({
         Open host view
       </button>
     </section>
+  );
+}
+
+function AbandonGameDialog({
+  gameCode,
+  isBusy,
+  onCancel,
+  onConfirm,
+}: {
+  gameCode: string;
+  isBusy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [confirmation, setConfirmation] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const canAbandon = confirmation === "ABANDON" && !isBusy;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && !isBusy) {
+        onCancel();
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isBusy, onCancel]);
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (canAbandon) {
+      onConfirm();
+    }
+  }
+
+  return (
+    <div
+      aria-labelledby="abandon-game-title"
+      aria-modal="true"
+      className="confirmation-dialog"
+      role="dialog"
+    >
+      <button
+        aria-label="Cancel abandon game"
+        className="confirmation-dialog-backdrop"
+        disabled={isBusy}
+        type="button"
+        onClick={onCancel}
+      />
+      <div className="confirmation-dialog-panel is-danger">
+        <div className="confirmation-dialog-header">
+          <div className="confirmation-dialog-icon">
+            <Trash2 aria-hidden="true" />
+          </div>
+          <div>
+            <p className="label">Destructive action</p>
+            <h2 id="abandon-game-title">Abandon {gameCode}</h2>
+            <p>
+              This removes every player and host, deletes submitted proofs,
+              closes this game code, and returns you to host setup.
+            </p>
+          </div>
+        </div>
+
+        <form className="confirmation-dialog-form" onSubmit={handleSubmit}>
+          <label className="confirmation-field">
+            <span>Type ABANDON to confirm</span>
+            <input
+              ref={inputRef}
+              autoCapitalize="characters"
+              autoComplete="off"
+              disabled={isBusy}
+              spellCheck={false}
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
+          </label>
+
+          <div className="confirmation-dialog-actions">
+            <button
+              className="secondary-action"
+              disabled={isBusy}
+              type="button"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button
+              className="control-button danger is-critical"
+              disabled={!canAbandon}
+              type="submit"
+            >
+              <X aria-hidden="true" />
+              {isBusy ? "Abandoning..." : "Abandon Game"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
