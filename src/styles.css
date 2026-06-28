@@ -364,7 +364,6 @@ img {
 .task-tile:active,
 .team-card:active,
 .roster-kick-button:active,
-.onboarding-hint button:active,
 .join-submit:active,
 .play-time-button:active,
 .proof-image-button:active,
@@ -734,66 +733,6 @@ img {
 .blackout-banner span {
   color: var(--ink);
   font-size: 0.9rem;
-}
-
-.onboarding-hint {
-  display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr) 2.45rem;
-  align-items: start;
-  gap: var(--space-sm);
-  border: 1px solid var(--primary);
-  border-radius: var(--radius-lg);
-  background: var(--primary-soft);
-  padding: var(--space-sm);
-  animation: panel-in 180ms var(--ease-out-expo);
-}
-
-.onboarding-icon {
-  display: grid;
-  width: 3rem;
-  height: 3rem;
-  place-items: center;
-  border-radius: var(--radius-md);
-  background: var(--bg);
-  color: var(--primary);
-}
-
-.onboarding-icon svg {
-  width: 1.45rem;
-  height: 1.45rem;
-}
-
-.onboarding-hint h2 {
-  margin: var(--space-2xs) 0 0;
-  font-size: 1.08rem;
-  line-height: 1.1;
-}
-
-.onboarding-hint p:not(.label) {
-  margin: var(--space-2xs) 0 0;
-  color: var(--ink);
-  font-size: 0.88rem;
-  font-weight: 700;
-  line-height: 1.32;
-}
-
-.onboarding-hint button {
-  display: grid;
-  width: 2.45rem;
-  height: 2.45rem;
-  place-items: center;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--primary-dark);
-  transition:
-    background 160ms var(--ease-out),
-    color 160ms var(--ease-out),
-    transform 120ms var(--ease-out);
-}
-
-.onboarding-hint button svg {
-  width: 1.2rem;
-  height: 1.2rem;
 }
 
 .section-heading {
@@ -2992,7 +2931,6 @@ img {
   .player-strip button:hover,
   .join-group-options button:hover,
   .random-team-button:hover,
-  .onboarding-hint button:hover,
   .selected-task-close:hover {
     border-color: var(--primary);
   }
@@ -3023,7 +2961,6 @@ img {
     color: white;
   }
 
-  .onboarding-hint button:hover,
   .selected-task-close:hover {
     background: var(--bg);
   }

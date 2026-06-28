@@ -181,7 +181,6 @@ type LocalStopPatch = Partial<
 
 const STORAGE_PLAYER_KEY = "scavenger-blackout-player";
 const STORAGE_GAME_CODE_KEY = "scavenger-blackout-game-code";
-const STORAGE_ONBOARDING_DISMISSED_KEY = "scavenger-blackout-onboarding-dismissed";
 const DEFAULT_PLAY_WINDOW_MINUTES = 30;
 const DEFAULT_STOP_WINDOW_MINUTES = 30;
 const BOARD_SLOT_COUNT = 25;
@@ -319,9 +318,6 @@ export default function App() {
   const [path, setPath] = useState(() => window.location.pathname);
   const isHostRoute = path === "/host";
   const [gameCode, setGameCode] = useState(initialGameCode);
-  const [isOnboardingDismissed, setIsOnboardingDismissed] = useState(() =>
-    readOnboardingDismissed(),
-  );
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [isLoading, setIsLoading] = useState(
     isSupabaseConfigured && initialGameCode.length > 0,
@@ -501,11 +497,7 @@ export default function App() {
     );
   }, [currentGroupTasks, gameState, membership?.groupId, membership?.role, pendingProofs]);
   const selectedTask =
-    currentGroupTasks.find((task) => task.id === selectedTaskId) ??
-    (currentGroup
-      ? getDefaultSelectedTask(currentGroup.id, currentGroupTasks, submissions)
-      : currentGroupTasks[0]) ??
-    null;
+    currentGroupTasks.find((task) => task.id === selectedTaskId) ?? null;
   const activeStopIndex =
     gameState?.game.phase === "play" && gameState.game.activeStopId === null
       ? -1
@@ -523,17 +515,13 @@ export default function App() {
 
   useEffect(() => {
     if (
-      currentGroup &&
-      currentGroupTasks.length > 0 &&
+      selectedTaskId &&
       !currentGroupTasks.some((task) => task.id === selectedTaskId)
     ) {
       setIsTaskCardDismissed(false);
-      setSelectedTaskId(
-        getDefaultSelectedTask(currentGroup.id, currentGroupTasks, submissions)?.id ??
-          currentGroupTasks[0].id,
-      );
+      setSelectedTaskId("");
     }
-  }, [currentGroup, currentGroupTasks, selectedTaskId, submissions]);
+  }, [currentGroupTasks, selectedTaskId]);
 
   function handleTaskSelect(taskId: string) {
     setSelectedTaskId(taskId);
@@ -714,11 +702,6 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }
-
-  function handleDismissOnboarding() {
-    setIsOnboardingDismissed(true);
-    storeOnboardingDismissed();
   }
 
   async function clearPendingProof(proofId: string) {
@@ -1550,10 +1533,7 @@ export default function App() {
             groups={groups}
             isBoardHidden={gameState.game.boardHidden}
             isTaskCardDismissed={isTaskCardDismissed}
-            isOnboardingDismissed={isOnboardingDismissed}
-            playerUserId={membership.userId}
             onDismissTaskCard={() => setIsTaskCardDismissed(true)}
-            onOnboardingDismiss={handleDismissOnboarding}
             onBoardViewChange={setBoardView}
             onRetryPendingProof={handleRetryPendingProof}
             onSubmitProof={handleSubmitProof}
@@ -2213,10 +2193,7 @@ function GroupView({
   groups,
   isBoardHidden,
   isTaskCardDismissed,
-  isOnboardingDismissed,
-  playerUserId,
   onDismissTaskCard,
-  onOnboardingDismiss,
   onBoardViewChange,
   onRetryPendingProof,
   onSubmitProof,
@@ -2234,10 +2211,7 @@ function GroupView({
   groups: Group[];
   isBoardHidden: boolean;
   isTaskCardDismissed: boolean;
-  isOnboardingDismissed: boolean;
-  playerUserId: string;
   onDismissTaskCard: () => void;
-  onOnboardingDismiss: () => void;
   onBoardViewChange: (view: BoardView) => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
@@ -2261,9 +2235,6 @@ function GroupView({
     (task) => task.free || getTaskStatus(task, group.id, submissions) === "approved",
   ).length;
   const hasTasks = tasks.length > 0;
-  const hasSubmittedProofs = groupSubmissions.some(
-    (submission) => submission.submittedBy === playerUserId,
-  );
   const pendingProofsByTask = useMemo(
     () => new Map(pendingProofs.map((proof) => [proof.taskId, proof])),
     [pendingProofs],
@@ -2273,15 +2244,9 @@ function GroupView({
     [pendingProofs],
   );
   const isBlackout = hasTasks && approvedCount === tasks.length;
-  const showOnboardingHint =
-    hasTasks && !isBoardHidden && !hasSubmittedProofs && !isOnboardingDismissed;
 
   return (
     <div className="view-stack group-view">
-      {showOnboardingHint && (
-        <PlayerOnboardingHint onDismiss={onOnboardingDismiss} />
-      )}
-
       {!isBoardHidden && isBlackout && (
         <section className="blackout-banner">
           <Check aria-hidden="true" />
@@ -2460,27 +2425,6 @@ function BoardHiddenRoster({
           );
         })}
       </div>
-    </section>
-  );
-}
-
-function PlayerOnboardingHint({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <section className="onboarding-hint" aria-labelledby="onboarding-title">
-      <div className="onboarding-icon">
-        <Camera aria-hidden="true" />
-      </div>
-      <div>
-        <p className="label">First move</p>
-        <h2 id="onboarding-title">Send one proof photo.</h2>
-        <p>
-          Pick any Ready square, then use the current task card to take or choose
-          a photo. Host review happens after you send it.
-        </p>
-      </div>
-      <button type="button" onClick={onDismiss} aria-label="Dismiss first move tip">
-        <X aria-hidden="true" />
-      </button>
     </section>
   );
 }
@@ -4690,22 +4634,6 @@ function getTaskStatus(
   return submission?.status ?? "ready";
 }
 
-function getDefaultSelectedTask(
-  groupId: string,
-  tasks: Task[],
-  submissions: Submission[],
-) {
-  return (
-    tasks.find((task) => {
-      const status = getTaskStatus(task, groupId, submissions);
-      return !task.free && (status === "ready" || status === "retake");
-    }) ??
-    tasks.find((task) => !task.free) ??
-    tasks[0] ??
-    null
-  );
-}
-
 function getStatusLabel(status: TaskStatus) {
   if (status === "approved") return "Approved";
   if (status === "pending") return "Sent";
@@ -5244,22 +5172,6 @@ function storePlayer(player: StoredPlayer) {
 function clearStoredPlayer() {
   try {
     window.localStorage.removeItem(STORAGE_PLAYER_KEY);
-  } catch {
-    // Local storage can be unavailable in private contexts.
-  }
-}
-
-function readOnboardingDismissed() {
-  try {
-    return window.localStorage.getItem(STORAGE_ONBOARDING_DISMISSED_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function storeOnboardingDismissed() {
-  try {
-    window.localStorage.setItem(STORAGE_ONBOARDING_DISMISSED_KEY, "true");
   } catch {
     // Local storage can be unavailable in private contexts.
   }
