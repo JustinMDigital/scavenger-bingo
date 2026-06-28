@@ -353,6 +353,7 @@ img {
 .play-time-button:active,
 .proof-image-button:active,
 .proof-lightbox-close:active,
+.selected-task-close:active,
 .welcome-card button:active {
   transform: scale(0.985);
 }
@@ -1077,6 +1078,29 @@ img {
   contain: paint;
 }
 
+.selected-task-close {
+  position: absolute;
+  inset-block-start: var(--space-xs);
+  inset-inline-end: var(--space-xs);
+  z-index: 1;
+  display: grid;
+  width: 2.45rem;
+  height: 2.45rem;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-dark);
+  transition:
+    background 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.selected-task-close svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
 .pending-proof-notice {
   display: grid;
   gap: var(--space-xs);
@@ -1137,6 +1161,7 @@ img {
   display: grid;
   grid-template-columns: 3.25rem minmax(0, 1fr);
   gap: var(--space-sm);
+  padding-inline-end: 2.55rem;
 }
 
 .selected-icon {
@@ -2650,7 +2675,8 @@ img {
   .team-card:hover,
   .player-strip button:hover,
   .join-group-options button:hover,
-  .onboarding-hint button:hover {
+  .onboarding-hint button:hover,
+  .selected-task-close:hover {
     border-color: var(--primary);
   }
 
@@ -2680,7 +2706,8 @@ img {
     color: white;
   }
 
-  .onboarding-hint button:hover {
+  .onboarding-hint button:hover,
+  .selected-task-close:hover {
     background: var(--bg);
   }
 }

@@ -217,6 +217,7 @@ export default function App() {
   );
   const [error, setError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [isTaskCardDismissed, setIsTaskCardDismissed] = useState(false);
   const [boardView, setBoardView] = useState<BoardView>("grid");
   const [showStopDetails, setShowStopDetails] = useState(false);
   const [expandedStopId, setExpandedStopId] = useState("");
@@ -411,12 +412,18 @@ export default function App() {
       currentGroupTasks.length > 0 &&
       !currentGroupTasks.some((task) => task.id === selectedTaskId)
     ) {
+      setIsTaskCardDismissed(false);
       setSelectedTaskId(
         getDefaultSelectedTask(currentGroup.id, currentGroupTasks, submissions)?.id ??
           currentGroupTasks[0].id,
       );
     }
   }, [currentGroup, currentGroupTasks, selectedTaskId, submissions]);
+
+  function handleTaskSelect(taskId: string) {
+    setSelectedTaskId(taskId);
+    setIsTaskCardDismissed(false);
+  }
 
   useEffect(() => {
     if (
@@ -672,6 +679,7 @@ export default function App() {
     let hasStoredPendingProof = false;
 
     setSelectedTaskId(taskId);
+    setIsTaskCardDismissed(false);
     setPendingProofs((currentProofs) =>
       upsertPendingProof(currentProofs, pendingProof),
     );
@@ -1372,13 +1380,15 @@ export default function App() {
           <GroupView
             boardView={boardView}
             group={currentGroup}
+            isTaskCardDismissed={isTaskCardDismissed}
             isOnboardingDismissed={isOnboardingDismissed}
             playerUserId={membership.userId}
+            onDismissTaskCard={() => setIsTaskCardDismissed(true)}
             onOnboardingDismiss={handleDismissOnboarding}
             onBoardViewChange={setBoardView}
             onRetryPendingProof={handleRetryPendingProof}
             onSubmitProof={handleSubmitProof}
-            onTaskSelect={setSelectedTaskId}
+            onTaskSelect={handleTaskSelect}
             pendingProofs={currentPendingProofs}
             retryingProofId={retryingProofId}
             selectedTask={selectedTask}
@@ -1887,8 +1897,10 @@ function HostGate({
 function GroupView({
   boardView,
   group,
+  isTaskCardDismissed,
   isOnboardingDismissed,
   playerUserId,
+  onDismissTaskCard,
   onOnboardingDismiss,
   onBoardViewChange,
   onRetryPendingProof,
@@ -1903,8 +1915,10 @@ function GroupView({
 }: {
   boardView: BoardView;
   group: Group;
+  isTaskCardDismissed: boolean;
   isOnboardingDismissed: boolean;
   playerUserId: string;
+  onDismissTaskCard: () => void;
   onOnboardingDismiss: () => void;
   onBoardViewChange: (view: BoardView) => void;
   onRetryPendingProof: (proofId: string) => void;
@@ -2036,12 +2050,13 @@ function GroupView({
         )}
       </section>
 
-      {selectedTask && (
+      {selectedTask && !isTaskCardDismissed && (
         <SelectedTaskCard
           key={selectedTask.id}
           groupId={group.id}
           isUploading={uploadingTaskId === selectedTask.id}
           isRetryingProof={pendingProofsByTask.get(selectedTask.id)?.id === retryingProofId}
+          onDismiss={onDismissTaskCard}
           onRetryPendingProof={onRetryPendingProof}
           onSubmitProof={onSubmitProof}
           pendingProof={pendingProofsByTask.get(selectedTask.id)}
@@ -3378,6 +3393,7 @@ function SelectedTaskCard({
   groupId,
   isUploading,
   isRetryingProof,
+  onDismiss,
   onRetryPendingProof,
   onSubmitProof,
   pendingProof,
@@ -3387,6 +3403,7 @@ function SelectedTaskCard({
   groupId: string;
   isUploading: boolean;
   isRetryingProof: boolean;
+  onDismiss: () => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
   pendingProof?: PendingProofUpload;
@@ -3443,6 +3460,14 @@ function SelectedTaskCard({
 
   return (
     <section className="selected-task" aria-label="Current task">
+      <button
+        aria-label="Close current task"
+        className="selected-task-close"
+        type="button"
+        onClick={onDismiss}
+      >
+        <X aria-hidden="true" />
+      </button>
       <div className="selected-task-main">
         <div className="selected-icon">
           <Icon aria-hidden="true" />
