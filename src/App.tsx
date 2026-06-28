@@ -15,6 +15,7 @@ import {
   Coins,
   Cookie,
   CupSoda,
+  Dices,
   Dog,
   Droplets,
   Eye,
@@ -81,6 +82,7 @@ import {
 } from "react";
 import {
   abandonGameLobby,
+  addGroup as createGroup,
   addStop as createStop,
   addTask as createTask,
   claimHost,
@@ -340,6 +342,7 @@ export default function App() {
   const [pendingProofs, setPendingProofs] = useState<PendingProofUpload[]>([]);
   const [movingMembershipId, setMovingMembershipId] = useState("");
   const [kickingMembershipId, setKickingMembershipId] = useState("");
+  const [isAddingGroup, setIsAddingGroup] = useState(false);
   const [isAbandonDialogOpen, setIsAbandonDialogOpen] = useState(false);
   const [isAbandoningGame, setIsAbandoningGame] = useState(false);
 
@@ -973,6 +976,31 @@ export default function App() {
     }
   }
 
+  async function handleAddGroup(groupName: string) {
+    if (!gameState || membership?.role !== "host") return false;
+
+    setIsAddingGroup(true);
+    try {
+      const group = await createGroup({
+        gameId: gameState.game.id,
+        name: groupName,
+      });
+      setGameState((currentState) =>
+        currentState ? upsertGroup(currentState, group) : currentState,
+      );
+      setSelectedHostGroupId(group.id);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast(`${group.shortName} added`);
+      return true;
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Add team failed");
+      return false;
+    } finally {
+      setIsAddingGroup(false);
+    }
+  }
+
   async function handleResetGameProofs() {
     if (!gameState || membership?.role !== "host") return;
 
@@ -1467,6 +1495,7 @@ export default function App() {
             <HostView
               activeStopIndex={activeStopIndex}
               addFiveMinutes={handleAddFiveMinutes}
+              addGroup={handleAddGroup}
               addStop={handleAddStop}
               addTask={handleAddTask}
               abandonGame={handleAbandonGame}
@@ -1477,6 +1506,7 @@ export default function App() {
               goToPlayTime={handlePlayTime}
               goToNextStop={handleNextStop}
               groups={groups}
+              isAddingGroup={isAddingGroup}
               kickingMembershipId={kickingMembershipId}
               kickPlayer={handleKickPlayerMembership}
               memberships={memberships}
@@ -1975,6 +2005,21 @@ function JoinView({
     onJoin({ name: cleanName, groupId, gameCode: cleanGameCode });
   }
 
+  function chooseRandomGroup() {
+    if (!hasGroups) {
+      return;
+    }
+
+    const candidateGroups =
+      groups.length > 1 ? groups.filter((group) => group.id !== groupId) : groups;
+    const randomGroup =
+      candidateGroups[Math.floor(Math.random() * candidateGroups.length)];
+
+    if (randomGroup) {
+      setGroupId(randomGroup.id);
+    }
+  }
+
   return (
     <section className="welcome-card" aria-labelledby="join-title">
       <div>
@@ -2025,7 +2070,20 @@ function JoinView({
         </label>
 
         <fieldset className="group-field">
-          <legend>Group</legend>
+          <legend className="visually-hidden">Group</legend>
+          <div className="group-field-header">
+            <span>Group</span>
+            {hasGroups && (
+              <button
+                className="random-team-button"
+                type="button"
+                onClick={chooseRandomGroup}
+              >
+                <Dices aria-hidden="true" />
+                Random team
+              </button>
+            )}
+          </div>
           {hasGroups ? (
             <div className="join-group-options">
               {groups.map((group) => (
@@ -2480,6 +2538,7 @@ function PendingProofNotice({
 function HostView({
   activeStopIndex,
   addFiveMinutes,
+  addGroup,
   addStop,
   addTask,
   abandonGame,
@@ -2490,6 +2549,7 @@ function HostView({
   goToPlayTime,
   goToNextStop,
   groups,
+  isAddingGroup,
   kickingMembershipId,
   kickPlayer,
   memberships,
@@ -2515,6 +2575,7 @@ function HostView({
 }: {
   activeStopIndex: number;
   addFiveMinutes: () => void;
+  addGroup: (groupName: string) => Promise<boolean>;
   addStop: () => void;
   addTask: () => void;
   abandonGame: () => void;
@@ -2525,6 +2586,7 @@ function HostView({
   goToPlayTime: (afterStopIndex: number) => void;
   goToNextStop: () => void;
   groups: Group[];
+  isAddingGroup: boolean;
   kickingMembershipId: string;
   kickPlayer: (membershipId: string) => void;
   memberships: Membership[];
@@ -2758,9 +2820,11 @@ function HostView({
       />
 
       <TeamManagementPanel
+        isAddingGroup={isAddingGroup}
         groups={groups}
         kickingMembershipId={kickingMembershipId}
         memberships={memberships}
+        onAddGroup={addGroup}
         movingMembershipId={movingMembershipId}
         onKickPlayer={kickPlayer}
         onMovePlayer={movePlayer}
@@ -2823,21 +2887,27 @@ function HostView({
 
 function TeamManagementPanel({
   groups,
+  isAddingGroup,
   kickingMembershipId,
   memberships,
   movingMembershipId,
+  onAddGroup,
   onKickPlayer,
   onMovePlayer,
   submissions,
 }: {
   groups: Group[];
+  isAddingGroup: boolean;
   kickingMembershipId: string;
   memberships: Membership[];
   movingMembershipId: string;
+  onAddGroup: (groupName: string) => Promise<boolean>;
   onKickPlayer: (membershipId: string) => void;
   onMovePlayer: (membershipId: string, groupId: string) => void;
   submissions: Submission[];
 }) {
+  const nextGroupName = `Team ${groups.length + 1}`;
+  const [newGroupName, setNewGroupName] = useState("");
   const players = useMemo(
     () => memberships.filter((membership) => membership.role === "player"),
     [memberships],
@@ -2914,6 +2984,16 @@ function TeamManagementPanel({
     onKickPlayer(player.id);
   }
 
+  async function handleAddGroup(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const didAddGroup = await onAddGroup(newGroupName.trim() || nextGroupName);
+
+    if (didAddGroup) {
+      setNewGroupName("");
+    }
+  }
+
   return (
     <section className="host-roster" aria-labelledby="roster-heading">
       <div className="section-heading">
@@ -2923,6 +3003,28 @@ function TeamManagementPanel({
         </div>
         <span>{players.length === 1 ? "1 player" : `${players.length} players`}</span>
       </div>
+
+      <form className="add-team-form" onSubmit={handleAddGroup}>
+        <label className="visually-hidden" htmlFor="new-team-name">
+          New team name
+        </label>
+        <input
+          id="new-team-name"
+          maxLength={40}
+          placeholder={nextGroupName}
+          value={newGroupName}
+          disabled={isAddingGroup}
+          onChange={(event) => setNewGroupName(event.target.value)}
+        />
+        <button
+          className="secondary-action add-team-button"
+          disabled={isAddingGroup}
+          type="submit"
+        >
+          <Plus aria-hidden="true" />
+          {isAddingGroup ? "Adding..." : "Add team"}
+        </button>
+      </form>
 
       {players.length > 0 ? (
         <div className="roster-grid">
@@ -4762,6 +4864,19 @@ function removeMembership(gameState: GameState, membershipId: string): GameState
     memberships: gameState.memberships.filter(
       (membership) => membership.id !== membershipId,
     ),
+  };
+}
+
+function upsertGroup(gameState: GameState, group: Group): GameState {
+  const groups = gameState.groups.some((currentGroup) => currentGroup.id === group.id)
+    ? gameState.groups.map((currentGroup) =>
+        currentGroup.id === group.id ? group : currentGroup,
+      )
+    : [...gameState.groups, group];
+
+  return {
+    ...gameState,
+    groups,
   };
 }
 

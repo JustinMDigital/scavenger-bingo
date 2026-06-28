@@ -35,6 +35,21 @@
   --group-orange: oklch(0.55 0.19 45);
   --group-orange-dark: oklch(0.39 0.15 45);
   --group-orange-soft: oklch(0.95 0.07 55);
+  --group-blue: oklch(0.49 0.18 245);
+  --group-blue-dark: oklch(0.36 0.14 245);
+  --group-blue-soft: oklch(0.94 0.045 245);
+  --group-green: oklch(0.48 0.16 152);
+  --group-green-dark: oklch(0.34 0.12 152);
+  --group-green-soft: oklch(0.94 0.05 152);
+  --group-teal: oklch(0.5 0.14 190);
+  --group-teal-dark: oklch(0.34 0.11 190);
+  --group-teal-soft: oklch(0.94 0.045 190);
+  --group-pink: oklch(0.55 0.19 342);
+  --group-pink-dark: oklch(0.39 0.15 342);
+  --group-pink-soft: oklch(0.95 0.055 342);
+  --group-gold: oklch(0.6 0.16 82);
+  --group-gold-dark: oklch(0.42 0.12 82);
+  --group-gold-soft: oklch(0.95 0.07 82);
   --group-color: var(--group-purple);
 
   --space-2xs: 0.25rem;
@@ -344,6 +359,7 @@ img {
 .board-view-toggle button:active,
 .group-board-tab:active,
 .join-group-options button:active,
+.random-team-button:active,
 .task-list-item:active,
 .task-tile:active,
 .team-card:active,
@@ -532,6 +548,46 @@ img {
   margin: 0;
   border: 0;
   padding: 0;
+}
+
+.group-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.group-field-header > span {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+
+.random-team-button {
+  display: inline-flex;
+  min-height: 2.4rem;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2xs);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--primary);
+  padding-inline: var(--space-sm);
+  font-size: 0.84rem;
+  font-weight: 950;
+  white-space: nowrap;
+  transition:
+    background 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.random-team-button svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .join-group-options {
@@ -2333,6 +2389,37 @@ img {
   font-weight: 900;
 }
 
+.add-team-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-sm);
+}
+
+.add-team-form input {
+  min-height: 2.9rem;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--ink);
+  padding-inline: var(--space-sm);
+  font-size: 0.92rem;
+  font-weight: 850;
+}
+
+.add-team-form input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.add-team-button {
+  white-space: nowrap;
+}
+
 .host-live-board {
   display: grid;
   gap: var(--space-xs);
@@ -2872,6 +2959,7 @@ img {
   .photo-actions,
   .host-controls,
   .board-editor-toolbar,
+  .add-team-form,
   .confirmation-dialog-actions,
   .stop-time-grid,
   .stop-action-row,
@@ -2903,6 +2991,7 @@ img {
   .team-card:hover,
   .player-strip button:hover,
   .join-group-options button:hover,
+  .random-team-button:hover,
   .onboarding-hint button:hover,
   .selected-task-close:hover {
     border-color: var(--primary);

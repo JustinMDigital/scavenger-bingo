@@ -333,6 +333,30 @@ export async function kickPlayerMembership(membershipId: string) {
   return mapMembership(result.data);
 }
 
+export async function addGroup({
+  gameId,
+  name,
+}: {
+  gameId: string;
+  name?: string;
+}) {
+  const client = requireSupabase();
+  const result = await client.rpc("add_game_group", {
+    target_game_id: gameId,
+    desired_group_name: name?.trim() || null,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (!result.data) {
+    throw new Error("Add team did not return a team.");
+  }
+
+  return mapGroup(result.data);
+}
+
 export async function saveTaskProof({
   gameId,
   groupId,
@@ -773,30 +797,40 @@ export function subscribeToGameChanges(
 
     channel = client
       .channel(`game:${gameId}:${generation}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "tasks",
-        filter: `game_id=eq.${gameId}`,
-      },
-      onChange,
-    )
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "group_board_tasks",
-        filter: `game_id=eq.${gameId}`,
-      },
-      onChange,
-    )
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "groups",
+          filter: `game_id=eq.${gameId}`,
+        },
+        onChange,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tasks",
+          filter: `game_id=eq.${gameId}`,
+        },
+        onChange,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "group_board_tasks",
+          filter: `game_id=eq.${gameId}`,
+        },
+        onChange,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
           schema: "public",
           table: "games",
           filter: `id=eq.${gameId}`,

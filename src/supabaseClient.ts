@@ -224,6 +224,13 @@ export type Database = {
         };
         Returns: Database["public"]["Tables"]["memberships"]["Row"];
       };
+      add_game_group: {
+        Args: {
+          target_game_id: string;
+          desired_group_name?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["groups"]["Row"];
+      };
       get_game_roster: {
         Args: {
           target_game_id: string;
