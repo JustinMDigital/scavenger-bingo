@@ -1077,6 +1077,62 @@ img {
   contain: paint;
 }
 
+.pending-proof-notice {
+  display: grid;
+  gap: var(--space-xs);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  padding: var(--space-sm);
+  animation: panel-in 170ms var(--ease-out-expo);
+}
+
+.pending-proof-notice-main {
+  display: grid;
+  grid-template-columns: 2.35rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.pending-proof-notice-main > svg {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--warning);
+  padding: 0.55rem;
+}
+
+.pending-proof-notice-main div {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.pending-proof-notice-main strong,
+.pending-proof-notice-main span,
+.pending-proof-notice-main small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pending-proof-notice-main strong {
+  font-size: 0.98rem;
+  font-weight: 950;
+}
+
+.pending-proof-notice-main span,
+.pending-proof-notice-main small {
+  color: var(--warning);
+  font-size: 0.84rem;
+  font-weight: 850;
+  line-height: 1.28;
+}
+
+.pending-proof-notice-action {
+  min-height: 2.55rem;
+}
+
 .selected-task-main {
   display: grid;
   grid-template-columns: 3.25rem minmax(0, 1fr);

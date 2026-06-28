@@ -618,9 +618,11 @@ export default function App() {
       retryCount: proof.retryCount + 1,
       lastError: message,
     };
+    let wasStored = false;
 
     try {
       await savePendingProofUpload(failedProof);
+      wasStored = true;
     } catch (caughtError) {
       console.warn("Could not update saved proof photo.", caughtError);
     }
@@ -628,6 +630,8 @@ export default function App() {
     setPendingProofs((currentProofs) =>
       upsertPendingProof(currentProofs, failedProof),
     );
+
+    return wasStored;
   }
 
   async function handleSubmitProof(taskId: string, file: File) {
@@ -665,14 +669,15 @@ export default function App() {
       groupId: membership.groupId,
       taskId,
     });
-    let hasSavedPendingProof = false;
+    let hasStoredPendingProof = false;
 
+    setSelectedTaskId(taskId);
+    setPendingProofs((currentProofs) =>
+      upsertPendingProof(currentProofs, pendingProof),
+    );
     try {
       await savePendingProofUpload(pendingProof);
-      hasSavedPendingProof = true;
-      setPendingProofs((currentProofs) =>
-        upsertPendingProof(currentProofs, pendingProof),
-      );
+      hasStoredPendingProof = true;
     } catch (caughtError) {
       console.warn("Could not save proof photo for retry.", caughtError);
     }
@@ -692,9 +697,7 @@ export default function App() {
         file: proofFile,
       });
 
-      if (hasSavedPendingProof) {
-        await clearPendingProof(pendingProof.id);
-      }
+      await clearPendingProof(pendingProof.id);
 
       try {
         await refreshGameState(gameState.game.code, { silent: true });
@@ -710,16 +713,14 @@ export default function App() {
       const isPreparationError = isProofPreparationError(message);
       setError(message);
 
-      if (hasSavedPendingProof) {
-        await updateFailedPendingProof(pendingProof, message);
-      }
+      const wasStoredAfterFailure = await updateFailedPendingProof(pendingProof, message);
 
       if (isPreparationError) {
         setToast("Photo is too large");
-      } else if (hasSavedPendingProof) {
+      } else if (hasStoredPendingProof || wasStoredAfterFailure) {
         setToast("Upload failed. Photo saved for retry");
       } else {
-        setToast("Upload failed");
+        setToast("Upload failed. Retry before closing this tab");
       }
     } finally {
       setUploadingTaskId("");
@@ -1958,6 +1959,16 @@ function GroupView({
         </section>
       )}
 
+      {pendingProofs.length > 0 && (
+        <PendingProofNotice
+          onRetryPendingProof={onRetryPendingProof}
+          pendingProofs={pendingProofs}
+          retryingProofId={retryingProofId}
+          tasks={tasks}
+          uploadingTaskId={uploadingTaskId}
+        />
+      )}
+
       <section aria-labelledby="board-heading">
         <div className="section-heading">
           <div>
@@ -2060,6 +2071,56 @@ function PlayerOnboardingHint({ onDismiss }: { onDismiss: () => void }) {
       </div>
       <button type="button" onClick={onDismiss} aria-label="Dismiss first move tip">
         <X aria-hidden="true" />
+      </button>
+    </section>
+  );
+}
+
+function PendingProofNotice({
+  onRetryPendingProof,
+  pendingProofs,
+  retryingProofId,
+  tasks,
+  uploadingTaskId,
+}: {
+  onRetryPendingProof: (proofId: string) => void;
+  pendingProofs: PendingProofUpload[];
+  retryingProofId: string;
+  tasks: Task[];
+  uploadingTaskId: string;
+}) {
+  const [firstProof, ...remainingProofs] = pendingProofs;
+  const firstTask = tasks.find((task) => task.id === firstProof.taskId) ?? null;
+  const isRetrying = firstProof.id === retryingProofId;
+  const isUploading = firstProof.taskId === uploadingTaskId;
+
+  return (
+    <section className="pending-proof-notice" aria-labelledby="pending-proof-title">
+      <div className="pending-proof-notice-main">
+        <Upload aria-hidden="true" />
+        <div>
+          <strong id="pending-proof-title">
+            {pendingProofs.length === 1
+              ? "Photo waiting to send"
+              : `${pendingProofs.length} photos waiting to send`}
+          </strong>
+          <span>
+            {firstTask ? firstTask.title : "Proof photo"} is ready to retry.
+            Keep this page open until it sends.
+          </span>
+          {remainingProofs.length > 0 && (
+            <small>{remainingProofs.length} more waiting.</small>
+          )}
+        </div>
+      </div>
+      <button
+        className="primary-action pending-proof-notice-action"
+        disabled={isRetrying || isUploading}
+        type="button"
+        onClick={() => onRetryPendingProof(firstProof.id)}
+      >
+        <Upload aria-hidden="true" />
+        {isRetrying ? "Retrying..." : "Retry upload"}
       </button>
     </section>
   );
@@ -3418,12 +3479,12 @@ function SelectedTaskCard({
               </span>
             )}
             <figcaption>
-              <strong>Photo saved on this device</strong>
+              <strong>Photo ready to retry</strong>
               <span>{pendingProof.fileName}</span>
               <small>
                 {pendingProof.lastError
                   ? getPendingProofErrorLabel(pendingProof.lastError)
-                  : "Host can see it after retry succeeds."}
+                  : "Keep this page open until retry succeeds."}
               </small>
             </figcaption>
           </figure>
