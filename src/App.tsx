@@ -24,7 +24,6 @@ import {
   Leaf,
   List,
   Mailbox,
-  Pause,
   Play,
   Plus,
   Route,
@@ -72,6 +71,12 @@ import {
   updateTaskDetails,
   updateSubmissionStatus,
 } from "./gameService";
+import {
+  createPendingProofUpload,
+  deletePendingProofUpload,
+  readPendingProofUploads,
+  savePendingProofUpload,
+} from "./pendingProofStore";
 import type {
   BoardAssignment,
   Game,
@@ -85,6 +90,7 @@ import type {
   Task,
   TaskStatus,
 } from "./gameService";
+import type { PendingProofUpload } from "./pendingProofStore";
 import { isSupabaseConfigured } from "./supabaseClient";
 
 type BoardView = "grid" | "list";
@@ -102,6 +108,11 @@ type TimerDisplay = {
   caption: string;
   state: "countdown" | "idle" | "finished";
   isWarning?: boolean;
+};
+
+type TimerTarget = {
+  targetTime: string;
+  referenceTime?: string;
 };
 
 type StoredPlayer = {
@@ -215,6 +226,8 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [timerTick, setTimerTick] = useState(Date.now());
   const [uploadingTaskId, setUploadingTaskId] = useState("");
+  const [retryingProofId, setRetryingProofId] = useState("");
+  const [pendingProofs, setPendingProofs] = useState<PendingProofUpload[]>([]);
   const [movingMembershipId, setMovingMembershipId] = useState("");
   const [kickingMembershipId, setKickingMembershipId] = useState("");
 
@@ -282,6 +295,24 @@ export default function App() {
   }
 
   useEffect(() => {
+    let isMounted = true;
+
+    readPendingProofUploads()
+      .then((proofs) => {
+        if (isMounted) {
+          setPendingProofs(proofs);
+        }
+      })
+      .catch((caughtError) => {
+        console.warn("Could not load saved proof photos.", caughtError);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!gameCode.trim()) {
       setIsLoading(false);
       return;
@@ -304,13 +335,13 @@ export default function App() {
   }, [gameState?.game.code, gameState?.game.id, refreshGameState]);
 
   useEffect(() => {
-    if (!gameState?.game.timerRunning || gameState.game.phase === "review") {
+    if (!gameState || gameState.game.phase === "review") {
       return undefined;
     }
 
     const interval = window.setInterval(() => setTimerTick(Date.now()), 1000);
     return () => window.clearInterval(interval);
-  }, [gameState?.game.phase, gameState?.game.timerRunning]);
+  }, [gameState]);
 
   useEffect(() => {
     if (!toast) {
@@ -339,6 +370,20 @@ export default function App() {
         : tasks,
     [boardAssignments, currentGroup, tasks],
   );
+  const currentPendingProofs = useMemo(() => {
+    if (!gameState || membership?.role !== "player" || !membership.groupId) {
+      return [];
+    }
+
+    const currentTaskIds = new Set(currentGroupTasks.map((task) => task.id));
+
+    return pendingProofs.filter(
+      (proof) =>
+        proof.gameId === gameState.game.id &&
+        proof.groupId === membership.groupId &&
+        currentTaskIds.has(proof.taskId),
+    );
+  }, [currentGroupTasks, gameState, membership?.groupId, membership?.role, pendingProofs]);
   const selectedTask =
     currentGroupTasks.find((task) => task.id === selectedTaskId) ??
     (currentGroup
@@ -355,8 +400,10 @@ export default function App() {
   const activeStop = stops[activeStopIndex] ?? stops[0] ?? null;
   const timerSeconds = useMemo(() => {
     void timerTick;
-    return gameState ? getGameRemainingSeconds(gameState.game) : 0;
-  }, [gameState, timerTick]);
+    return gameState
+      ? getGameRemainingSeconds(gameState.game, stops, activeStopIndex)
+      : 0;
+  }, [activeStopIndex, gameState, stops, timerTick]);
 
   useEffect(() => {
     if (
@@ -549,6 +596,40 @@ export default function App() {
     storeOnboardingDismissed();
   }
 
+  async function clearPendingProof(proofId: string) {
+    setPendingProofs((currentProofs) =>
+      currentProofs.filter((proof) => proof.id !== proofId),
+    );
+
+    try {
+      await deletePendingProofUpload(proofId);
+    } catch (caughtError) {
+      console.warn("Could not clear saved proof photo.", caughtError);
+    }
+  }
+
+  async function updateFailedPendingProof(
+    proof: PendingProofUpload,
+    message: string,
+  ) {
+    const failedProof: PendingProofUpload = {
+      ...proof,
+      updatedAt: Date.now(),
+      retryCount: proof.retryCount + 1,
+      lastError: message,
+    };
+
+    try {
+      await savePendingProofUpload(failedProof);
+    } catch (caughtError) {
+      console.warn("Could not update saved proof photo.", caughtError);
+    }
+
+    setPendingProofs((currentProofs) =>
+      upsertPendingProof(currentProofs, failedProof),
+    );
+  }
+
   async function handleSubmitProof(taskId: string, file: File) {
     if (!gameState || membership?.role !== "player" || !membership.groupId) {
       setToast("Join a group first");
@@ -577,6 +658,25 @@ export default function App() {
       return;
     }
 
+    const pendingProof = createPendingProofUpload({
+      file,
+      gameCode: gameState.game.code,
+      gameId: gameState.game.id,
+      groupId: membership.groupId,
+      taskId,
+    });
+    let hasSavedPendingProof = false;
+
+    try {
+      await savePendingProofUpload(pendingProof);
+      hasSavedPendingProof = true;
+      setPendingProofs((currentProofs) =>
+        upsertPendingProof(currentProofs, pendingProof),
+      );
+    } catch (caughtError) {
+      console.warn("Could not save proof photo for retry.", caughtError);
+    }
+
     setUploadingTaskId(taskId);
     try {
       if (file.size > MAX_PROOF_FILE_BYTES) {
@@ -591,14 +691,102 @@ export default function App() {
         taskId,
         file: proofFile,
       });
-      await refreshGameState(gameState.game.code, { silent: true });
+
+      if (hasSavedPendingProof) {
+        await clearPendingProof(pendingProof.id);
+      }
+
+      try {
+        await refreshGameState(gameState.game.code, { silent: true });
+      } catch (caughtError) {
+        setError(getErrorMessage(caughtError));
+        setToast("Photo sent. Refresh if it does not show.");
+        return;
+      }
+
       setToast(proofFile === file ? "Photo sent" : "Photo compressed and sent");
     } catch (caughtError) {
       const message = getErrorMessage(caughtError);
+      const isPreparationError = isProofPreparationError(message);
       setError(message);
-      setToast(isProofPreparationError(message) ? "Photo is too large" : "Upload failed");
+
+      if (hasSavedPendingProof) {
+        await updateFailedPendingProof(pendingProof, message);
+      }
+
+      if (isPreparationError) {
+        setToast("Photo is too large");
+      } else if (hasSavedPendingProof) {
+        setToast("Upload failed. Photo saved for retry");
+      } else {
+        setToast("Upload failed");
+      }
     } finally {
       setUploadingTaskId("");
+    }
+  }
+
+  async function handleRetryPendingProof(proofId: string) {
+    const pendingProof = pendingProofs.find((proof) => proof.id === proofId);
+
+    if (!pendingProof) {
+      setToast("Saved photo was not found");
+      return;
+    }
+
+    setRetryingProofId(proofId);
+    setUploadingTaskId(pendingProof.taskId);
+
+    try {
+      if (!isAllowedProofImageFile(pendingProof.file)) {
+        setToast("Choose a JPG, PNG, WebP, HEIC, or HEIF image");
+        return;
+      }
+
+      if (pendingProof.file.size <= 0) {
+        setToast("Choose a non-empty image");
+        return;
+      }
+
+      if (pendingProof.file.size > MAX_PROOF_FILE_BYTES) {
+        setToast("Compressing saved photo...");
+      }
+
+      const proofFile = await prepareProofImageFile(pendingProof.file);
+
+      await saveTaskProof({
+        gameId: pendingProof.gameId,
+        groupId: pendingProof.groupId,
+        taskId: pendingProof.taskId,
+        file: proofFile,
+      });
+      await clearPendingProof(pendingProof.id);
+
+      if (gameState?.game.code === pendingProof.gameCode) {
+        try {
+          await refreshGameState(pendingProof.gameCode, { silent: true });
+        } catch (caughtError) {
+          setError(getErrorMessage(caughtError));
+          setToast("Photo sent. Refresh if it does not show.");
+          return;
+        }
+      }
+
+      setToast(proofFile === pendingProof.file ? "Photo sent" : "Photo compressed and sent");
+    } catch (caughtError) {
+      const message = getErrorMessage(caughtError);
+      setError(message);
+      await updateFailedPendingProof(pendingProof, message);
+      setToast(
+        isProofPreparationError(message)
+          ? "Saved photo is too large"
+          : "Retry failed. Photo still saved",
+      );
+    } finally {
+      setRetryingProofId("");
+      setUploadingTaskId((currentTaskId) =>
+        currentTaskId === pendingProof.taskId ? "" : currentTaskId,
+      );
     }
   }
 
@@ -677,7 +865,7 @@ export default function App() {
         phase: "live",
         timerRunning: false,
         timerStartedAt: new Date().toISOString(),
-        timerSecondsTotal: firstStop ? getStopCountdownSeconds(stops, 0) : 0,
+        timerSecondsTotal: 0,
       });
       await refreshGameState(gameState.game.code, { silent: true });
       setExpandedStopId(firstStop?.id ?? "");
@@ -929,58 +1117,39 @@ export default function App() {
     }
   }
 
-  async function handleToggleTimer() {
+  async function handleAddFiveMinutes() {
     if (!gameState) return;
 
-    await syncGameTimer(
-      gameState.game.timerRunning
-        ? {
-            timerRunning: false,
-            timerSecondsTotal: timerSeconds,
-          }
-        : {
-            timerRunning: true,
-            timerStartedAt: new Date().toISOString(),
-          },
-      {
-        failureToast: gameState.game.timerRunning
-          ? "Timer paused locally"
-          : "Timer running locally",
-      },
-    );
-  }
+    const targetStop =
+      gameState.game.phase === "play"
+        ? activeStopIndex < 0
+          ? stops[0] ?? null
+          : stops[activeStopIndex + 1] ?? null
+        : activeStop;
 
-  async function handleAddFiveMinutes() {
-    if (!gameState || !activeStop) return;
-
-    const timerPatch: LocalGamePatch = {
-      timerSecondsTotal: timerSeconds + 5 * 60,
-      timerStartedAt: gameState.game.timerRunning ? new Date().toISOString() : undefined,
-    };
-
-    if (gameState.game.phase === "play") {
-      await syncGameTimer(timerPatch, {
-        successToast: "Added 5 minutes",
-        failureToast: "Added 5 minutes locally",
-      });
+    if (!targetStop) {
       return;
     }
 
-    const nextLeaveTime = addMinutesToClockTime(activeStop.leaveTime, 5);
-    applyLocalStopPatch(activeStop.id, { leaveTime: nextLeaveTime });
-    applyLocalGamePatch(timerPatch);
+    const stopPatch: LocalStopPatch =
+      gameState.game.phase === "play"
+        ? { arriveTime: addMinutesToClockTime(targetStop.arriveTime, 5) }
+        : { leaveTime: addMinutesToClockTime(targetStop.leaveTime, 5) };
+
+    applyLocalStopPatch(targetStop.id, stopPatch);
     setError("");
 
     try {
-      await updateStopDetails(activeStop.id, {
-        leaveTime: nextLeaveTime,
-      });
-      await updateGameTimer(gameState.game.id, timerPatch);
+      await updateStopDetails(targetStop.id, stopPatch);
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast("Added 5 minutes");
+      setToast(
+        gameState.game.phase === "play"
+          ? "Arrival pushed 5 minutes"
+          : "Added 5 minutes",
+      );
     } catch (caughtError) {
       console.warn(
-        `Timer sync failed; keeping local host timer state: ${getErrorMessage(
+        `Stop time sync failed; keeping local host time state: ${getErrorMessage(
           caughtError,
         )}`,
         caughtError,
@@ -999,23 +1168,14 @@ export default function App() {
       return;
     }
 
-    const earlySeconds =
-      afterStop &&
-      gameState.game.phase === "live" &&
-      afterStop.id === gameState.game.activeStopId
-        ? timerSeconds
-        : 0;
-
     await syncGameTimer(
       {
         activeStopId: afterStop?.id ?? null,
         phase: "play",
         timerRunning: true,
         timerStartedAt: new Date().toISOString(),
-        timerSecondsTotal:
-          getPlayCountdownSeconds(stops, afterStopIndex) + earlySeconds,
       },
-      { failureToast: "Play time running locally" },
+      { failureToast: "Play phase changed locally" },
     );
     setExpandedStopId("");
   }
@@ -1035,9 +1195,8 @@ export default function App() {
         phase: "live",
         timerRunning: true,
         timerStartedAt: new Date().toISOString(),
-        timerSecondsTotal: getStopCountdownSeconds(stops, stopIndex),
       },
-      { failureToast: "Stop timer running locally" },
+      { failureToast: "Stop phase changed locally" },
     );
     setExpandedStopId(stop.id);
   }
@@ -1052,13 +1211,14 @@ export default function App() {
     await syncGameTimer(
       {
         phase,
-        timerRunning: phase === "live",
-        timerStartedAt: phase === "live" ? new Date().toISOString() : undefined,
-        timerSecondsTotal: phase === "review" ? timerSeconds : undefined,
+        timerRunning: phase !== "review",
+        timerStartedAt: phase !== "review" ? new Date().toISOString() : undefined,
       },
       {
         failureToast:
-          phase === "review" ? "Review mode set locally" : "Timer running locally",
+          phase === "review"
+            ? "Review mode set locally"
+            : "Schedule phase changed locally",
       },
     );
   }
@@ -1191,7 +1351,6 @@ export default function App() {
               tasks={tasks}
               timerDisplay={timerDisplay}
               routeDisplay={routeDisplay}
-              toggleTimer={handleToggleTimer}
               updateStop={handleUpdateStop}
               updateTask={handleUpdateTask}
             />
@@ -1216,8 +1375,11 @@ export default function App() {
             playerUserId={membership.userId}
             onOnboardingDismiss={handleDismissOnboarding}
             onBoardViewChange={setBoardView}
+            onRetryPendingProof={handleRetryPendingProof}
             onSubmitProof={handleSubmitProof}
             onTaskSelect={setSelectedTaskId}
+            pendingProofs={currentPendingProofs}
+            retryingProofId={retryingProofId}
             selectedTask={selectedTask}
             submissions={submissions}
             tasks={currentGroupTasks}
@@ -1728,8 +1890,11 @@ function GroupView({
   playerUserId,
   onOnboardingDismiss,
   onBoardViewChange,
+  onRetryPendingProof,
   onSubmitProof,
   onTaskSelect,
+  pendingProofs,
+  retryingProofId,
   selectedTask,
   submissions,
   tasks,
@@ -1741,8 +1906,11 @@ function GroupView({
   playerUserId: string;
   onOnboardingDismiss: () => void;
   onBoardViewChange: (view: BoardView) => void;
+  onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
   onTaskSelect: (taskId: string) => void;
+  pendingProofs: PendingProofUpload[];
+  retryingProofId: string;
   selectedTask: Task | null;
   submissions: Submission[];
   tasks: Task[];
@@ -1761,6 +1929,14 @@ function GroupView({
   const hasTasks = tasks.length > 0;
   const hasSubmittedProofs = groupSubmissions.some(
     (submission) => submission.submittedBy === playerUserId,
+  );
+  const pendingProofsByTask = useMemo(
+    () => new Map(pendingProofs.map((proof) => [proof.taskId, proof])),
+    [pendingProofs],
+  );
+  const pendingProofTaskIds = useMemo(
+    () => new Set(pendingProofs.map((proof) => proof.taskId)),
+    [pendingProofs],
   );
   const isBlackout = hasTasks && approvedCount === tasks.length;
   const showOnboardingHint =
@@ -1790,7 +1966,13 @@ function GroupView({
               {hasTasks ? `${completedCount} of ${tasks.length} sent` : "Board not ready"}
             </h2>
           </div>
-          <span>{hasTasks ? `${approvedCount} approved` : "Ask host"}</span>
+          <span>
+            {pendingProofs.length > 0
+              ? `${pendingProofs.length} saved to retry`
+              : hasTasks
+                ? `${approvedCount} approved`
+                : "Ask host"}
+          </span>
         </div>
 
         {hasTasks ? (
@@ -1818,6 +2000,7 @@ function GroupView({
               <TaskBoard
                 groupId={group.id}
                 onTaskSelect={onTaskSelect}
+                pendingProofTaskIds={pendingProofTaskIds}
                 selectedTaskId={selectedTask?.id ?? ""}
                 submissions={submissions}
                 tasks={tasks}
@@ -1826,6 +2009,7 @@ function GroupView({
               <TaskList
                 groupId={group.id}
                 onTaskSelect={onTaskSelect}
+                pendingProofTaskIds={pendingProofTaskIds}
                 selectedTaskId={selectedTask?.id ?? ""}
                 submissions={submissions}
                 tasks={tasks}
@@ -1846,7 +2030,10 @@ function GroupView({
           key={selectedTask.id}
           groupId={group.id}
           isUploading={uploadingTaskId === selectedTask.id}
+          isRetryingProof={pendingProofsByTask.get(selectedTask.id)?.id === retryingProofId}
+          onRetryPendingProof={onRetryPendingProof}
           onSubmitProof={onSubmitProof}
+          pendingProof={pendingProofsByTask.get(selectedTask.id)}
           submission={groupSubmissions.find(
             (submission) => submission.taskId === selectedTask.id,
           )}
@@ -1910,7 +2097,6 @@ function HostView({
   tasks,
   timerDisplay,
   routeDisplay,
-  toggleTimer,
   updateStop,
   updateTask,
 }: {
@@ -1945,7 +2131,6 @@ function HostView({
   tasks: Task[];
   timerDisplay: TimerDisplay;
   routeDisplay: RouteDisplay;
-  toggleTimer: () => void;
   updateStop: (
     stopId: string,
     patch: Partial<Pick<HuntStop, "name" | "detail" | "arriveTime" | "leaveTime">>,
@@ -1991,7 +2176,7 @@ function HostView({
                 onClick={() => setHuntPhase("live")}
               >
                 <Play aria-hidden="true" />
-                Resume hunt
+                Return to schedule
               </button>
               <button
                 className="control-button danger"
@@ -2012,10 +2197,6 @@ function HostView({
             </>
           ) : (
             <>
-              <button className="control-button" type="button" onClick={toggleTimer}>
-                {game.timerRunning ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-                {game.timerRunning ? "Pause" : "Resume"}
-              </button>
               <button className="control-button" type="button" onClick={addFiveMinutes}>
                 <Clock aria-hidden="true" />
                 +5 min
@@ -2995,12 +3176,14 @@ function PlayTimeRow({
 function TaskBoard({
   groupId,
   onTaskSelect,
+  pendingProofTaskIds,
   selectedTaskId,
   submissions,
   tasks,
 }: {
   groupId: string;
   onTaskSelect: (taskId: string) => void;
+  pendingProofTaskIds: Set<string>;
   selectedTaskId: string;
   submissions: Submission[];
   tasks: Task[];
@@ -3011,6 +3194,7 @@ function TaskBoard({
         <TaskTile
           key={task.id}
           groupId={groupId}
+          hasPendingProof={pendingProofTaskIds.has(task.id)}
           isSelected={task.id === selectedTaskId}
           onTaskSelect={onTaskSelect}
           submissions={submissions}
@@ -3023,12 +3207,14 @@ function TaskBoard({
 
 function TaskTile({
   groupId,
+  hasPendingProof,
   isSelected,
   onTaskSelect,
   submissions,
   task,
 }: {
   groupId: string;
+  hasPendingProof?: boolean;
   isSelected?: boolean;
   onTaskSelect?: (taskId: string) => void;
   submissions: Submission[];
@@ -3036,6 +3222,7 @@ function TaskTile({
 }) {
   const status = getTaskStatus(task, groupId, submissions);
   const Icon = ICONS[task.icon] ?? Circle;
+  const showSavedState = status === "ready" && hasPendingProof;
 
   return (
     <button
@@ -3043,6 +3230,7 @@ function TaskTile({
         "task-tile",
         isSelected ? "is-selected" : "",
         status !== "ready" ? `is-${status}` : "",
+        showSavedState ? "is-saved" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -3053,9 +3241,19 @@ function TaskTile({
     >
       <Icon className="task-icon" aria-hidden="true" />
       <span className="task-title">{task.title}</span>
-      {status !== "ready" && (
-        <span key={status} className="tile-state" aria-label={getStatusLabel(status)}>
-          {status === "approved" ? <Check aria-hidden="true" /> : <Send aria-hidden="true" />}
+      {(status !== "ready" || showSavedState) && (
+        <span
+          key={showSavedState ? "saved" : status}
+          className="tile-state"
+          aria-label={showSavedState ? "Saved to retry" : getStatusLabel(status)}
+        >
+          {status === "approved" ? (
+            <Check aria-hidden="true" />
+          ) : showSavedState ? (
+            <Upload aria-hidden="true" />
+          ) : (
+            <Send aria-hidden="true" />
+          )}
         </span>
       )}
     </button>
@@ -3065,12 +3263,14 @@ function TaskTile({
 function TaskList({
   groupId,
   onTaskSelect,
+  pendingProofTaskIds,
   selectedTaskId,
   submissions,
   tasks,
 }: {
   groupId: string;
   onTaskSelect: (taskId: string) => void;
+  pendingProofTaskIds: Set<string>;
   selectedTaskId: string;
   submissions: Submission[];
   tasks: Task[];
@@ -3080,6 +3280,7 @@ function TaskList({
       {tasks.map((task) => {
         const status = getTaskStatus(task, groupId, submissions);
         const Icon = ICONS[task.icon] ?? Circle;
+        const showSavedState = status === "ready" && pendingProofTaskIds.has(task.id);
 
         return (
           <button
@@ -3088,6 +3289,7 @@ function TaskList({
               "task-list-item",
               selectedTaskId === task.id ? "is-selected" : "",
               status !== "ready" ? `is-${status}` : "",
+              showSavedState ? "is-saved" : "",
             ]
               .filter(Boolean)
               .join(" ")}
@@ -3100,7 +3302,7 @@ function TaskList({
             <span className="task-list-copy">
               <span className="task-list-top">
                 <span className="task-list-title">{task.title}</span>
-                <StatusBadge status={status} />
+                <StatusBadge saved={showSavedState} status={status} />
               </span>
               <span className="task-list-description">{task.description}</span>
             </span>
@@ -3114,23 +3316,32 @@ function TaskList({
 function SelectedTaskCard({
   groupId,
   isUploading,
+  isRetryingProof,
+  onRetryPendingProof,
   onSubmitProof,
+  pendingProof,
   submission,
   task,
 }: {
   groupId: string;
   isUploading: boolean;
+  isRetryingProof: boolean;
+  onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
+  pendingProof?: PendingProofUpload;
   submission?: Submission;
   task: Task;
 }) {
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const [isReplacingProof, setIsReplacingProof] = useState(false);
+  const [pendingProofPreviewUrl, setPendingProofPreviewUrl] = useState("");
   const Icon = ICONS[task.icon] ?? Circle;
   const status = getTaskStatus(task, groupId, submission ? [submission] : []);
   const inputId = `${groupId}-${task.id}`;
   const proofNote = getProofStateNote(status, task.free, isReplacingProof);
+  const showPendingProofPanel =
+    Boolean(pendingProof) && (!isUploading || Boolean(pendingProof?.lastError));
   const canSubmitProof =
     !task.free && (status === "ready" || status === "retake" || isReplacingProof);
   const canReplaceProof =
@@ -3146,6 +3357,18 @@ function SelectedTaskCard({
   useEffect(() => {
     setIsReplacingProof(false);
   }, [submission?.id, submission?.status, task.id]);
+
+  useEffect(() => {
+    if (!pendingProof?.file) {
+      setPendingProofPreviewUrl("");
+      return undefined;
+    }
+
+    const objectUrl = URL.createObjectURL(pendingProof.file);
+    setPendingProofPreviewUrl(objectUrl);
+
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [pendingProof?.file, pendingProof?.id, pendingProof?.updatedAt]);
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -3182,6 +3405,38 @@ function SelectedTaskCard({
           <img src={submission.imageUrl} alt="" />
           <figcaption>{submission.imageName}</figcaption>
         </figure>
+      )}
+
+      {pendingProof && showPendingProofPanel && (
+        <div className="pending-proof-panel">
+          <figure className="proof-preview is-local">
+            {pendingProofPreviewUrl ? (
+              <img src={pendingProofPreviewUrl} alt="" />
+            ) : (
+              <span className="proof-preview-fallback">
+                <Image aria-hidden="true" />
+              </span>
+            )}
+            <figcaption>
+              <strong>Photo saved on this device</strong>
+              <span>{pendingProof.fileName}</span>
+              <small>
+                {pendingProof.lastError
+                  ? getPendingProofErrorLabel(pendingProof.lastError)
+                  : "Host can see it after retry succeeds."}
+              </small>
+            </figcaption>
+          </figure>
+          <button
+            className="primary-action pending-proof-retry"
+            disabled={isUploading || isRetryingProof}
+            type="button"
+            onClick={() => onRetryPendingProof(pendingProof.id)}
+          >
+            <Upload aria-hidden="true" />
+            {isRetryingProof ? "Retrying..." : "Retry upload"}
+          </button>
+        </div>
       )}
 
       {proofNote && (
@@ -3629,9 +3884,12 @@ function ProofLightbox({
   );
 }
 
-function StatusBadge({ status }: { status: TaskStatus }) {
+function StatusBadge({ saved, status }: { saved?: boolean; status: TaskStatus }) {
+  const isSaved = saved && status === "ready";
   const icon =
-    status === "approved" ? (
+    isSaved ? (
+      <Upload aria-hidden="true" />
+    ) : status === "approved" ? (
       <Check aria-hidden="true" />
     ) : status === "ready" ? (
       <Camera aria-hidden="true" />
@@ -3641,11 +3899,17 @@ function StatusBadge({ status }: { status: TaskStatus }) {
 
   return (
     <span
-      key={status}
-      className={status === "ready" ? "status-badge" : `status-badge is-${status}`}
+      key={isSaved ? "saved" : status}
+      className={
+        isSaved
+          ? "status-badge is-saved"
+          : status === "ready"
+            ? "status-badge"
+            : `status-badge is-${status}`
+      }
     >
       {icon}
-      {getStatusLabel(status)}
+      {isSaved ? "Saved" : getStatusLabel(status)}
     </span>
   );
 }
@@ -4048,17 +4312,68 @@ function getProofStateNote(
   return "";
 }
 
-function getGameRemainingSeconds(game: Game) {
-  if (!game.timerRunning) {
-    return Math.max(0, game.timerSecondsTotal);
+function getPendingProofErrorLabel(message: string) {
+  if (isProofPreparationError(message)) {
+    return "This saved photo is too large. Choose a smaller replacement.";
   }
 
-  const startedAt = new Date(game.timerStartedAt).getTime();
-  const elapsedSeconds = Number.isFinite(startedAt)
-    ? Math.floor((Date.now() - startedAt) / 1000)
-    : 0;
+  return "Last upload failed. Retry when service improves.";
+}
 
-  return Math.max(0, game.timerSecondsTotal - elapsedSeconds);
+function upsertPendingProof(
+  pendingProofs: PendingProofUpload[],
+  pendingProof: PendingProofUpload,
+) {
+  return [
+    pendingProof,
+    ...pendingProofs.filter((proof) => proof.id !== pendingProof.id),
+  ].sort((first, second) => second.updatedAt - first.updatedAt);
+}
+
+function getGameRemainingSeconds(
+  game: Game,
+  stops: HuntStop[],
+  activeStopIndex: number,
+) {
+  const target = getGameTimerTarget(game, stops, activeStopIndex);
+
+  if (!target) {
+    return 0;
+  }
+
+  return getSecondsUntilClockTarget(target);
+}
+
+function getGameTimerTarget(
+  game: Game,
+  stops: HuntStop[],
+  activeStopIndex: number,
+): TimerTarget | null {
+  if (game.phase === "review") {
+    return null;
+  }
+
+  if (game.phase === "play") {
+    const targetStop =
+      activeStopIndex < 0 ? stops[0] : stops[activeStopIndex + 1];
+    const referenceStop = activeStopIndex >= 0 ? stops[activeStopIndex] : null;
+
+    return targetStop
+      ? {
+          targetTime: targetStop.arriveTime,
+          referenceTime: referenceStop?.leaveTime,
+        }
+      : null;
+  }
+
+  const activeStop = stops[activeStopIndex] ?? stops[0];
+
+  return activeStop
+    ? {
+        targetTime: activeStop.leaveTime,
+        referenceTime: activeStop.arriveTime,
+      }
+    : null;
 }
 
 function formatTimer(seconds: number) {
@@ -4142,22 +4457,7 @@ function getStopCountdownSeconds(stops: HuntStop[], stopIndex: number) {
   return getClockDurationSeconds(stop.arriveTime, stop.leaveTime);
 }
 
-function getPlayCountdownSeconds(stops: HuntStop[], afterStopIndex: number) {
-  if (afterStopIndex < 0) {
-    return stops[0] ? getSecondsUntilTodayClockTime(stops[0].arriveTime) : 0;
-  }
-
-  const afterStop = stops[afterStopIndex];
-  const nextStop = stops[afterStopIndex + 1];
-
-  if (!afterStop || !nextStop) {
-    return 0;
-  }
-
-  return getClockDurationSeconds(afterStop.leaveTime, nextStop.arriveTime);
-}
-
-function getSecondsUntilTodayClockTime(targetTime: string) {
+function getSecondsUntilClockTarget({ targetTime, referenceTime }: TimerTarget) {
   const targetMinutes = getClockMinutes(targetTime);
 
   if (targetMinutes === null) {
@@ -4166,8 +4466,22 @@ function getSecondsUntilTodayClockTime(targetTime: string) {
 
   const now = new Date();
   const target = new Date(now);
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const referenceMinutes = referenceTime ? getClockMinutes(referenceTime) : null;
 
   target.setHours(Math.floor(targetMinutes / 60), targetMinutes % 60, 0, 0);
+
+  if (
+    referenceMinutes !== null &&
+    targetMinutes <= referenceMinutes &&
+    target.getTime() < now.getTime()
+  ) {
+    const millisPastTarget = now.getTime() - target.getTime();
+
+    if (currentMinutes >= referenceMinutes || millisPastTarget > 12 * 60 * 60 * 1000) {
+      target.setDate(target.getDate() + 1);
+    }
+  }
 
   return Math.max(0, Math.ceil((target.getTime() - now.getTime()) / 1000));
 }

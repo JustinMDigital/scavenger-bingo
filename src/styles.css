@@ -836,6 +836,11 @@ img {
   background: var(--warning-soft);
 }
 
+.task-tile.is-saved {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
 .task-tile.is-approved {
   border-color: var(--success);
   background: var(--success-soft);
@@ -905,6 +910,11 @@ img {
   color: white;
 }
 
+.task-tile.is-saved .tile-state {
+  background: var(--warning);
+  color: white;
+}
+
 .task-tile.is-retake .tile-state {
   background: var(--danger);
   color: white;
@@ -946,6 +956,11 @@ img {
   background: var(--warning-soft);
 }
 
+.task-list-item.is-saved {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
 .task-list-item.is-retake {
   border-color: var(--danger);
   background: var(--danger-soft);
@@ -982,6 +997,11 @@ img {
 }
 
 .task-list-item.is-pending .task-list-icon {
+  background: white;
+  color: var(--warning);
+}
+
+.task-list-item.is-saved .task-list-icon {
   background: white;
   color: var(--warning);
 }
@@ -1158,6 +1178,11 @@ img {
   color: var(--warning);
 }
 
+.status-badge.is-saved {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
 .status-badge.is-retake {
   background: var(--danger-soft);
   color: var(--danger);
@@ -1180,13 +1205,73 @@ img {
 }
 
 .proof-preview figcaption {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
   color: var(--muted);
   font-size: 0.9rem;
   font-weight: 850;
 }
 
+.proof-preview figcaption strong,
+.proof-preview figcaption span,
+.proof-preview figcaption small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proof-preview figcaption strong {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 950;
+}
+
+.proof-preview figcaption small {
+  color: var(--warning);
+  font-size: 0.78rem;
+  font-weight: 850;
+  line-height: 1.24;
+}
+
 .proof-preview.is-retake img {
   filter: saturate(0.75);
+}
+
+.pending-proof-panel {
+  display: grid;
+  gap: var(--space-xs);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  padding: var(--space-xs);
+  animation: panel-in 160ms var(--ease-out-expo);
+}
+
+.proof-preview.is-local img,
+.proof-preview-fallback {
+  width: 5.5rem;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-md);
+}
+
+.proof-preview.is-local img {
+  object-fit: cover;
+}
+
+.proof-preview-fallback {
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--warning);
+}
+
+.proof-preview-fallback svg {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+
+.pending-proof-retry {
+  min-height: 2.55rem;
 }
 
 .proof-replace-action,
