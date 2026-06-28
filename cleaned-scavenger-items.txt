@@ -1,0 +1,54 @@
+Prepared Newport Scavenger Bingo Items
+
+Notes:
+- Red-highlighted items from List.eml are removed.
+- Each item has a Lucide icon name in brackets.
+- The Supabase migration uses this same wording and icon set.
+
+Easy
+1. [Armchair] Rest at the benches at 28th Street and take a photo.
+2. [Grid3X3] Play hopscotch at the playground.
+3. [Bird] Take a photo with the friendly pelican near the playground.
+4. [Circle] Take a team photo on the flying blue discs near the pelican.
+5. [Bus] Find a Newport Beach trolley stop sign and take a photo.
+6. [Toilet] Photograph a public restroom that is not at Newport Pier.
+7. [Waves] Take a photo with a striped beach towel.
+8. [Umbrella] Take a photo with a Tommy Bahama beach umbrella.
+9. [Landmark] Take a team photo at the Kids Lighthouse.
+10. [Badge] Take a photo at the new lifeguard station donor wall.
+11. [Utensils] Take a photo in front of an Italian restaurant.
+12. [UtensilsCrossed] Take a photo in front of a Mexican food restaurant.
+13. [Signpost] Take a photo under the "Don't look up here" sign.
+14. [Flag] Take a photo pledging allegiance under the American flag at 2807.
+15. [FerrisWheel] Take a team photo with the Balboa Fun Zone Ferris wheel in the background.
+16. [Landmark] Take a photo at the Balboa Pavilion sign.
+17. [Ship] Take a photo at the Balboa Island Ferry entrance or sign.
+18. [Flame] Find a public fire ring near Balboa Pier and take a photo.
+19. [Waves] Take a team photo at the end of Balboa Pier.
+20. [Waves] Take a team photo at the end of Newport Pier.
+21. [Fish] Take a photo with the Dory Fleet Fish Market sign.
+22. [Volleyball] Find a beach volleyball court and take a team action photo.
+23. [Ticket] Take a photo with the Ferris wheel ticket booth or ride sign.
+
+Medium
+1. [IceCreamBowl] Take a photo with a Balboa Bar or frozen banana.
+2. [HeartHandshake] Perform a random act of kindness, then take a photo.
+3. [Dog] Take a selfie with a dog.
+4. [Triangle] Build a team pyramid and take a photo.
+5. [Truck] Take a photo with a 22nd Street Pizza boardwalk delivery person.
+6. [Pizza] Enjoy a slice at the chosen pizza place and take a team photo.
+7. [Pizza] Take a photo with a 22nd Street Pizza box.
+8. [CupSoda] Take a team drink-break photo.
+9. [Martini] Take a team jello-shot photo.
+10. [Ticket] Win arcade tickets and take a photo.
+11. [Bike] Do figure 8s at the blacktop near a school.
+12. [Trophy] Take a group selfie with the "Hero who did go" statue or sign.
+13. [School] Take a photo at the Newport Elementary principal-name sign.
+
+Hard / Variable
+1. [Shirt] Take a photo with someone wearing a college t-shirt.
+2. [Coins] Find a penny and take a photo.
+3. [Truck] Take a photo with a lifeguard in a truck.
+4. [Shirt] Take a photo with someone wearing an LA Chargers or LA Rams t-shirt.
+5. [Goal] Take a photo with a USA soccer fan.
+6. [Candy] Grab a piece of candy and take a photo.
