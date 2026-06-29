@@ -2466,6 +2466,29 @@ img {
   margin-block-start: var(--space-sm);
 }
 
+.proof-export-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  margin-block-end: var(--space-xs);
+}
+
+.proof-download-action {
+  min-height: 2.45rem;
+  padding-inline: var(--space-sm);
+}
+
+.proof-export-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: right;
+}
+
 .proof-list {
   display: grid;
   gap: var(--space-xs);

@@ -17,6 +17,7 @@ import {
   CupSoda,
   Dices,
   Dog,
+  Download,
   Droplets,
   Eye,
   EyeOff,
@@ -86,6 +87,7 @@ import {
   addStop as createStop,
   addTask as createTask,
   claimHost,
+  createProofDownloadUrl,
   joinGame,
   kickPlayerMembership,
   loadGameState,
@@ -4185,6 +4187,11 @@ function ProofList({
   const [lightboxSubmissionId, setLightboxSubmissionId] = useState<string | null>(
     null,
   );
+  const [zipDownloadState, setZipDownloadState] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
+  const [zipDownloadError, setZipDownloadError] = useState("");
   const sortedSubmissions = useMemo(
     () => [...submissions].sort((a, b) => b.createdAt - a.createdAt),
     [submissions],
@@ -4208,6 +4215,61 @@ function ProofList({
     }
   }, [lightboxSubmissionId, submissions]);
 
+  async function downloadProofZip() {
+    if (zipDownloadState) {
+      return;
+    }
+
+    const exportItems = sortedSubmissions.map((submission) => ({
+      group: groups.find((group) => group.id === submission.groupId) ?? null,
+      submission,
+      task: tasks.find((task) => task.id === submission.taskId) ?? null,
+    }));
+    const usedNames = new Set<string>();
+    const entries: ZipFileEntry[] = [];
+
+    setZipDownloadError("");
+    setZipDownloadState({ completed: 0, total: exportItems.length });
+
+    try {
+      for (const [index, item] of exportItems.entries()) {
+        const signedUrl = await createProofDownloadUrl(item.submission.imagePath);
+        const response = await fetch(signedUrl);
+
+        if (!response.ok) {
+          throw new Error(
+            `Could not download ${item.submission.imageName}: ${response.status}`,
+          );
+        }
+
+        const blob = await response.blob();
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const filename = getProofZipFilename({
+          blobType: blob.type,
+          group: item.group,
+          index,
+          submission: item.submission,
+          task: item.task,
+          usedNames,
+        });
+
+        entries.push({
+          bytes,
+          lastModified: new Date(item.submission.updatedAt),
+          name: filename,
+        });
+        setZipDownloadState({ completed: index + 1, total: exportItems.length });
+      }
+
+      const zipBlob = createZipBlob(entries);
+      downloadBlob(zipBlob, getProofZipArchiveName());
+    } catch (caughtError) {
+      setZipDownloadError(getErrorMessage(caughtError));
+    } finally {
+      setZipDownloadState(null);
+    }
+  }
+
   if (sortedSubmissions.length === 0) {
     return (
       <div className="empty-state">
@@ -4220,6 +4282,24 @@ function ProofList({
 
   return (
     <>
+      <div className="proof-export-toolbar">
+        <button
+          className="secondary-action proof-download-action"
+          disabled={Boolean(zipDownloadState)}
+          type="button"
+          onClick={downloadProofZip}
+        >
+          <Download aria-hidden="true" />
+          {zipDownloadState
+            ? `Zipping ${zipDownloadState.completed}/${zipDownloadState.total}`
+            : `Download ZIP (${sortedSubmissions.length})`}
+        </button>
+        {zipDownloadError && (
+          <p className="proof-export-error" role="alert">
+            {zipDownloadError}
+          </p>
+        )}
+      </div>
       <div className="proof-list">
         {sortedSubmissions.map((submission) => {
           const group =
@@ -4478,6 +4558,302 @@ function formatSubmissionByline(submission: Submission) {
 
 function getSubmitterName(submission: Submission) {
   return submission.submittedByName?.trim() || "Unknown player";
+}
+
+type ZipFileEntry = {
+  bytes: Uint8Array<ArrayBuffer>;
+  lastModified: Date;
+  name: string;
+};
+
+type ProofZipFilenameOptions = {
+  blobType: string;
+  group: Group | null;
+  index: number;
+  submission: Submission;
+  task: Task | null;
+  usedNames: Set<string>;
+};
+
+function getProofZipFilename({
+  blobType,
+  group,
+  index,
+  submission,
+  task,
+  usedNames,
+}: ProofZipFilenameOptions) {
+  const baseName = [
+    String(index + 1).padStart(2, "0"),
+    group?.shortName ?? submission.groupId,
+    task?.title ?? submission.taskId,
+    getSubmitterName(submission),
+  ]
+    .map(getFilenamePart)
+    .filter(Boolean)
+    .join("-");
+  const extension =
+    getFileExtensionFromName(submission.imageName) ||
+    getFileExtensionFromMimeType(blobType) ||
+    ".jpg";
+
+  return getUniqueFilename(`${baseName || "proof"}${extension}`, usedNames);
+}
+
+function getProofZipArchiveName() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const datePart = `${year}-${month}-${day}`;
+
+  return `scavenger-bingo-proofs-${datePart}.zip`;
+}
+
+function getFilenamePart(value: string) {
+  return value
+    .trim()
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase()
+    .slice(0, 54);
+}
+
+function getFileExtensionFromName(filename: string) {
+  const match = filename.toLowerCase().match(/\.[a-z0-9]+$/);
+  return match ? match[0] : "";
+}
+
+function getFileExtensionFromMimeType(mimeType: string) {
+  switch (mimeType) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/heic":
+      return ".heic";
+    case "image/heif":
+      return ".heif";
+    default:
+      return "";
+  }
+}
+
+function getUniqueFilename(filename: string, usedNames: Set<string>) {
+  const extension = getFileExtensionFromName(filename);
+  const baseName = extension ? filename.slice(0, -extension.length) : filename;
+  let nextName = filename;
+  let suffix = 2;
+
+  while (usedNames.has(nextName.toLowerCase())) {
+    nextName = `${baseName}-${suffix}${extension}`;
+    suffix += 1;
+  }
+
+  usedNames.add(nextName.toLowerCase());
+  return nextName;
+}
+
+function createZipBlob(entries: ZipFileEntry[]) {
+  const fileParts: BlobPart[] = [];
+  const centralDirectoryParts: BlobPart[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const encodedName = new TextEncoder().encode(entry.name);
+    const crc = getCrc32(entry.bytes);
+    const { date, time } = getDosDateTime(entry.lastModified);
+    const localHeader = createZipLocalFileHeader({
+      crc,
+      date,
+      nameLength: encodedName.length,
+      size: entry.bytes.byteLength,
+      time,
+    });
+    const centralDirectoryHeader = createZipCentralDirectoryHeader({
+      crc,
+      date,
+      nameLength: encodedName.length,
+      offset,
+      size: entry.bytes.byteLength,
+      time,
+    });
+
+    fileParts.push(localHeader, encodedName, entry.bytes);
+    centralDirectoryParts.push(centralDirectoryHeader, encodedName);
+    offset += localHeader.byteLength + encodedName.byteLength + entry.bytes.byteLength;
+  }
+
+  const centralDirectorySize = centralDirectoryParts.reduce(
+    (size, part) => size + getBlobPartSize(part),
+    0,
+  );
+  const endOfCentralDirectory = createZipEndOfCentralDirectory({
+    centralDirectoryOffset: offset,
+    centralDirectorySize,
+    entryCount: entries.length,
+  });
+
+  return new Blob(
+    [...fileParts, ...centralDirectoryParts, endOfCentralDirectory],
+    { type: "application/zip" },
+  );
+}
+
+function createZipLocalFileHeader({
+  crc,
+  date,
+  nameLength,
+  size,
+  time,
+}: {
+  crc: number;
+  date: number;
+  nameLength: number;
+  size: number;
+  time: number;
+}) {
+  const header = new ArrayBuffer(30);
+  const view = new DataView(header);
+
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, time, true);
+  view.setUint16(12, date, true);
+  view.setUint32(14, crc, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, nameLength, true);
+  view.setUint16(28, 0, true);
+
+  return new Uint8Array(header);
+}
+
+function createZipCentralDirectoryHeader({
+  crc,
+  date,
+  nameLength,
+  offset,
+  size,
+  time,
+}: {
+  crc: number;
+  date: number;
+  nameLength: number;
+  offset: number;
+  size: number;
+  time: number;
+}) {
+  const header = new ArrayBuffer(46);
+  const view = new DataView(header);
+
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, time, true);
+  view.setUint16(14, date, true);
+  view.setUint32(16, crc, true);
+  view.setUint32(20, size, true);
+  view.setUint32(24, size, true);
+  view.setUint16(28, nameLength, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, offset, true);
+
+  return new Uint8Array(header);
+}
+
+function createZipEndOfCentralDirectory({
+  centralDirectoryOffset,
+  centralDirectorySize,
+  entryCount,
+}: {
+  centralDirectoryOffset: number;
+  centralDirectorySize: number;
+  entryCount: number;
+}) {
+  const header = new ArrayBuffer(22);
+  const view = new DataView(header);
+
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralDirectorySize, true);
+  view.setUint32(16, centralDirectoryOffset, true);
+  view.setUint16(20, 0, true);
+
+  return new Uint8Array(header);
+}
+
+function getBlobPartSize(part: BlobPart) {
+  if (typeof part === "string") {
+    return new TextEncoder().encode(part).byteLength;
+  }
+
+  if (part instanceof Blob) {
+    return part.size;
+  }
+
+  return part.byteLength;
+}
+
+function getDosDateTime(date: Date) {
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = Math.max(1980, safeDate.getFullYear());
+
+  return {
+    date:
+      ((year - 1980) << 9) |
+      ((safeDate.getMonth() + 1) << 5) |
+      safeDate.getDate(),
+    time:
+      (safeDate.getHours() << 11) |
+      (safeDate.getMinutes() << 5) |
+      Math.floor(safeDate.getSeconds() / 2),
+  };
+}
+
+function getCrc32(bytes: Uint8Array<ArrayBuffer>) {
+  let crc = 0xffffffff;
+
+  for (const byte of bytes) {
+    crc = ZIP_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const ZIP_CRC_TABLE = Array.from({ length: 256 }, (_, tableIndex) => {
+  let crc = tableIndex;
+
+  for (let bitIndex = 0; bitIndex < 8; bitIndex += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+
+  return crc >>> 0;
+});
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function formatSubmissionTime(timestamp: number) {

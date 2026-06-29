@@ -435,6 +435,22 @@ export async function updateSubmissionStatus(
   return result.data;
 }
 
+export async function createProofDownloadUrl(
+  imagePath: string,
+  expiresInSeconds = 60 * 10,
+) {
+  const client = requireSupabase();
+  const result = await client.storage
+    .from(PROOFS_BUCKET)
+    .createSignedUrl(imagePath, expiresInSeconds);
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return result.data.signedUrl;
+}
+
 export async function resetGameProofs(gameId: string) {
   const client = requireSupabase();
   const submissionsResult = await client
