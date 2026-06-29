@@ -4227,42 +4227,64 @@ function ProofList({
     }));
     const usedNames = new Set<string>();
     const entries: ZipFileEntry[] = [];
+    const skippedProofs: string[] = [];
 
     setZipDownloadError("");
     setZipDownloadState({ completed: 0, total: exportItems.length });
 
     try {
       for (const [index, item] of exportItems.entries()) {
-        const signedUrl = await createProofDownloadUrl(item.submission.imagePath);
-        const response = await fetch(signedUrl);
+        try {
+          const signedUrl = await createProofDownloadUrl(item.submission.imagePath);
+          const response = await fetch(signedUrl);
 
-        if (!response.ok) {
-          throw new Error(
-            `Could not download ${item.submission.imageName}: ${response.status}`,
-          );
+          if (!response.ok) {
+            throw new Error(
+              `Could not download ${item.submission.imageName}: ${response.status}`,
+            );
+          }
+
+          const blob = await response.blob();
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          const filename = getProofZipFilename({
+            blobType: blob.type,
+            group: item.group,
+            index,
+            submission: item.submission,
+            task: item.task,
+            usedNames,
+          });
+
+          entries.push({
+            bytes,
+            lastModified: new Date(item.submission.updatedAt),
+            name: filename,
+          });
+        } catch {
+          skippedProofs.push(getProofExportLabel(item));
         }
 
-        const blob = await response.blob();
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const filename = getProofZipFilename({
-          blobType: blob.type,
-          group: item.group,
-          index,
-          submission: item.submission,
-          task: item.task,
-          usedNames,
-        });
-
-        entries.push({
-          bytes,
-          lastModified: new Date(item.submission.updatedAt),
-          name: filename,
-        });
         setZipDownloadState({ completed: index + 1, total: exportItems.length });
+      }
+
+      if (entries.length === 0) {
+        throw new Error(
+          "No proof photos could be found in storage. The submission rows exist, but the image files are missing.",
+        );
       }
 
       const zipBlob = createZipBlob(entries);
       downloadBlob(zipBlob, getProofZipArchiveName());
+
+      if (skippedProofs.length > 0) {
+        setZipDownloadError(
+          `Downloaded ${entries.length} photos. Skipped ${
+            skippedProofs.length
+          } missing ${skippedProofs.length === 1 ? "file" : "files"}: ${formatSkippedProofs(
+            skippedProofs,
+          )}`,
+        );
+      }
     } catch (caughtError) {
       setZipDownloadError(getErrorMessage(caughtError));
     } finally {
@@ -4574,6 +4596,27 @@ type ProofZipFilenameOptions = {
   task: Task | null;
   usedNames: Set<string>;
 };
+
+type ProofExportItem = {
+  group: Group | null;
+  submission: Submission;
+  task: Task | null;
+};
+
+function getProofExportLabel({ group, submission, task }: ProofExportItem) {
+  return `${group?.shortName ?? submission.groupId} - ${
+    task?.title ?? submission.taskId
+  }`;
+}
+
+function formatSkippedProofs(skippedProofs: string[]) {
+  const visibleProofs = skippedProofs.slice(0, 3).join(", ");
+  const hiddenCount = skippedProofs.length - 3;
+
+  return hiddenCount > 0
+    ? `${visibleProofs}, +${hiddenCount} more`
+    : visibleProofs;
+}
 
 function getProofZipFilename({
   blobType,
