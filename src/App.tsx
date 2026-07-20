@@ -1740,7 +1740,13 @@ function HostSetupView({
   onClaim: (request: HostClaimRequest) => void;
 }) {
   return (
-    <main className="main-content">
+    <main className="entry-page host-entry-page">
+      <a className="entry-brand" href="/" aria-label="Scavenger Blackout home">
+        <span className="entry-brand-mark" aria-hidden="true">
+          <Grid3X3 />
+        </span>
+        <span>Scavenger Blackout</span>
+      </a>
       {error && (
         <div className="toast-region error-message" role="alert">
           {error}
@@ -1757,6 +1763,9 @@ function HostSetupView({
         isBusy={isBusy}
         onClaim={onClaim}
       />
+      <a className="entry-back-link" href="/">
+        Joining someone else? Enter a room code
+      </a>
     </main>
   );
 }
@@ -1788,44 +1797,57 @@ function GameCodeGate({
   }
 
   return (
-    <main className="main-content">
-      {error && (
-        <div className="toast-region error-message" role="alert">
-          {error}
-        </div>
-      )}
-      {statusMessage && (
-        <div className="toast-region" role="status" aria-live="polite">
-          {statusMessage}
-        </div>
-      )}
-      <section className="welcome-card" aria-labelledby="game-code-title">
-        <div>
-          <p className="label">Join game</p>
-          <h1 id="game-code-title">Enter the game code from your host.</h1>
-          <p>The code loads the right teams and board for this event.</p>
+    <main className="landing-page">
+      <a className="landing-brand" href="/" aria-label="Scavenger Blackout home">
+        <span className="landing-brand-mark" aria-hidden="true">
+          <Grid3X3 />
+        </span>
+        <span>Scavenger Blackout</span>
+      </a>
+
+      <section className="landing-hero" aria-labelledby="game-code-title">
+        <div className="landing-copy">
+          <h1 id="game-code-title">Join a scavenger hunt</h1>
+          <p>Enter the room code from your host to find your team and board.</p>
         </div>
 
-        <form className="join-form" onSubmit={handleSubmit}>
-          <label className="field">
-            <span>Game code</span>
-            <input
-              autoCapitalize="characters"
-              autoComplete="off"
-              maxLength={24}
-              value={gameCode}
-              onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-              placeholder="EVENT-2026"
-            />
-          </label>
-          <button
-            className="join-submit"
-            disabled={!gameCode.trim() || isBusy}
-            type="submit"
-          >
-            {isBusy ? "Loading..." : "Load game"}
+        <form className="landing-join-form" onSubmit={handleSubmit}>
+          <label htmlFor="landing-room-code">Room code</label>
+          <input
+            id="landing-room-code"
+            autoCapitalize="characters"
+            autoComplete="off"
+            autoFocus
+            maxLength={24}
+            value={gameCode}
+            onChange={(event) => setGameCode(event.target.value.toUpperCase())}
+            placeholder="ENTER CODE"
+          />
+          <button disabled={!gameCode.trim() || isBusy} type="submit">
+            {isBusy ? "Finding room..." : "Join room"}
           </button>
+          {error && (
+            <p className="landing-form-message is-error" role="alert">
+              {error}
+            </p>
+          )}
+          {statusMessage && !error && (
+            <p className="landing-form-message" role="status" aria-live="polite">
+              {statusMessage}
+            </p>
+          )}
         </form>
+      </section>
+
+      <section className="landing-host" aria-labelledby="host-callout-title">
+        <div>
+          <h2 id="host-callout-title">Want to run the hunt?</h2>
+          <p>Create a room, build the tasks, choose teams, and share the code.</p>
+        </div>
+        <a className="landing-host-link" href="/host">
+          <Plus aria-hidden="true" />
+          Create a hunt
+        </a>
       </section>
     </main>
   );
@@ -2125,11 +2147,14 @@ function HostGate({
   }
 
   return (
-    <section className="welcome-card" aria-labelledby="host-title">
+    <section className="welcome-card host-gate" aria-labelledby="host-title">
       <div>
-        <p className="label">Host access</p>
-        <h2 id="host-title">Set the game code and open the host view.</h2>
-        <p>This is the code players enter before joining a group.</p>
+        <p className="label">Host a hunt</p>
+        <h2 id="host-title">Create the room, then build the hunt.</h2>
+        <p>
+          Choose a room code and private host PIN. Next you can edit tasks,
+          teams, stops, and boards before players begin.
+        </p>
       </div>
 
       <form className="join-form" onSubmit={handleSubmit}>
@@ -2141,7 +2166,7 @@ function HostGate({
             maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-            placeholder="EVENT-2026"
+            placeholder="FRIDAY-NIGHT"
           />
         </label>
         <label className="field">
@@ -2171,7 +2196,7 @@ function HostGate({
           disabled={!displayName.trim() || !gameCode.trim() || !pin.trim() || isBusy}
           type="submit"
         >
-          {isBusy ? "Checking..." : "Set code and open host"}
+          {isBusy ? "Opening hunt..." : "Create or open hunt"}
         </button>
       </form>
     </section>
@@ -2558,264 +2583,421 @@ function HostView({
   const selectedGroup =
     groups.find((group) => group.id === selectedHostGroupId) ?? null;
   const boardsLocked = submissions.length > 0;
+  const isHuntActive =
+    game.phase !== "live" || activeStopIndex >= 0 || game.timerRunning;
+  const [hostArea, setHostArea] = useState<"setup" | "run" | "manage">(
+    isHuntActive ? "run" : "setup",
+  );
+  const [setupStep, setSetupStep] = useState<"teams" | "boards" | "route">(
+    "teams",
+  );
+  const boardsReady =
+    tasks.length >= BOARD_SLOT_COUNT &&
+    groups.every(
+      (group) =>
+        getGroupBoardTasks(group.id, tasks, boardAssignments).length ===
+        BOARD_SLOT_COUNT,
+    );
+
+  useEffect(() => {
+    if (isHuntActive) {
+      setHostArea("run");
+    }
+  }, [isHuntActive]);
+
+  const setupSteps = [
+    {
+      id: "teams" as const,
+      label: "Teams",
+      detail: groups.length === 1 ? "1 team ready" : `${groups.length} teams ready`,
+      complete: groups.length > 0,
+    },
+    {
+      id: "boards" as const,
+      label: "Boards",
+      detail: boardsReady ? "Boards are ready" : `${tasks.length} tasks in the pool`,
+      complete: boardsReady,
+    },
+    {
+      id: "route" as const,
+      label: "Route",
+      detail: stops.length === 1 ? "1 stop planned" : `${stops.length} stops planned`,
+      complete: stops.length > 0,
+    },
+  ];
 
   return (
     <div className="view-stack host-view">
-      <section className="stop-card host-stop" aria-label="Host controls">
-        <div>
-          <p className="label">Host controls</p>
-          <h2>{routeDisplay.title}</h2>
-          <p>{routeDisplay.detail}</p>
-        </div>
-        <div
-          className={
-            timerDisplay.state === "countdown"
-              ? "timer-block"
-              : "timer-block is-status"
-          }
+      <nav className="host-area-nav" aria-label="Host workspace">
+        <button
+          aria-current={hostArea === "setup" ? "page" : undefined}
+          className={hostArea === "setup" ? "is-active" : ""}
+          type="button"
+          onClick={() => setHostArea("setup")}
         >
-          <span>{timerDisplay.label}</span>
-          <small>{timerDisplay.caption}</small>
-        </div>
-
-        <div className="host-controls">
-          {game.phase === "review" ? (
-            <>
-              <button
-                className="control-button primary"
-                type="button"
-                onClick={() => setHuntPhase("live")}
-              >
-                <Play aria-hidden="true" />
-                Return to schedule
-              </button>
-              <button
-                aria-pressed={!game.boardHidden}
-                className={game.boardHidden ? "control-button primary" : "control-button"}
-                type="button"
-                onClick={() => setBoardHidden(!game.boardHidden)}
-              >
-                {game.boardHidden ? (
-                  <Eye aria-hidden="true" />
-                ) : (
-                  <EyeOff aria-hidden="true" />
-                )}
-                {game.boardHidden ? "Show board" : "Hide board"}
-              </button>
-              <button
-                className="control-button danger"
-                type="button"
-                onClick={resetGameProofs}
-              >
-                <Trash2 aria-hidden="true" />
-                Reset game
-              </button>
-              <button
-                className="control-button danger is-critical"
-                type="button"
-                onClick={abandonGame}
-              >
-                <X aria-hidden="true" />
-                Abandon Game
-              </button>
-            </>
-          ) : (
-            <>
-              <button className="control-button" type="button" onClick={addFiveMinutes}>
-                <Clock aria-hidden="true" />
-                +5 min
-              </button>
-              <button
-                aria-pressed={!game.boardHidden}
-                className={game.boardHidden ? "control-button primary" : "control-button"}
-                type="button"
-                onClick={() => setBoardHidden(!game.boardHidden)}
-              >
-                {game.boardHidden ? (
-                  <Eye aria-hidden="true" />
-                ) : (
-                  <EyeOff aria-hidden="true" />
-                )}
-                {game.boardHidden ? "Show board" : "Hide board"}
-              </button>
-              <button
-                className="control-button"
-                disabled={activeStopIndex >= stops.length - 1}
-                type="button"
-                onClick={() =>
-                  game.phase === "play"
-                    ? goToNextStop()
-                    : goToPlayTime(activeStopIndex)
-                }
-              >
-                {game.phase === "play" ? (
-                  <Flag aria-hidden="true" />
-                ) : (
-                  <Play aria-hidden="true" />
-                )}
-                {isOpeningPlay
-                  ? "Start Stop 1"
-                  : game.phase === "play"
-                    ? "Start next stop"
-                    : "Play time"}
-              </button>
-              <button
-                className="control-button primary"
-                type="button"
-                onClick={() => setHuntPhase("review")}
-              >
-                <Check aria-hidden="true" />
-                End hunt
-              </button>
-              <button
-                className="control-button danger"
-                type="button"
-                onClick={resetGameProofs}
-              >
-                <Trash2 aria-hidden="true" />
-                Reset game
-              </button>
-              <button
-                className="control-button danger is-critical"
-                type="button"
-                onClick={abandonGame}
-              >
-                <X aria-hidden="true" />
-                Abandon Game
-              </button>
-            </>
-          )}
-        </div>
-      </section>
-
-      <section className="host-stops" aria-labelledby="stops-heading">
-        <div className="section-heading">
-          <div>
-            <p className="label">Route</p>
-            <h2 id="stops-heading">Stops and time</h2>
-          </div>
-          <span>{stops.length} stops</span>
-        </div>
-
-        <div className="stop-editor-list">
-          {stops[0] && (
-            <PlayTimeRow
-              afterStopIndex={-1}
-              isActive={game.phase === "play" && activeStopIndex === -1}
-              nextStop={stops[0]}
-              onStart={() => goToPlayTime(-1)}
-            />
-          )}
-          {stops.map((stop, index) => (
-            <Fragment key={stop.id}>
-              <StopEditor
-                canRemove={stops.length > 1}
-                index={index}
-                isActive={game.phase === "live" && index === activeStopIndex}
-                isExpanded={expandedStopId === stop.id}
-                onRemove={() => removeStop(stop.id)}
-                onSave={() => setExpandedStopId("")}
-                onToggle={() =>
-                  setExpandedStopId(expandedStopId === stop.id ? "" : stop.id)
-                }
-                stop={stop}
-                stopCount={stops.length}
-                updateStop={updateStop}
-              />
-              {stops[index + 1] && (
-                <PlayTimeRow
-                  afterStop={stop}
-                  afterStopIndex={index}
-                  isActive={game.phase === "play" && index === activeStopIndex}
-                  nextStop={stops[index + 1]}
-                  onStart={() => goToPlayTime(index)}
-                />
-              )}
-            </Fragment>
-          ))}
-        </div>
-
-        <button className="add-stop-button" type="button" onClick={addStop}>
-          <Plus aria-hidden="true" />
-          Add stop
+          Set up
         </button>
-      </section>
+        <button
+          aria-current={hostArea === "run" ? "page" : undefined}
+          className={hostArea === "run" ? "is-active" : ""}
+          type="button"
+          onClick={() => setHostArea("run")}
+        >
+          Run hunt
+        </button>
+        <button
+          aria-current={hostArea === "manage" ? "page" : undefined}
+          className={hostArea === "manage" ? "is-active" : ""}
+          type="button"
+          onClick={() => setHostArea("manage")}
+        >
+          Manage
+        </button>
+      </nav>
 
-      <BoardEditor
-        boardAssignments={boardAssignments}
-        boardsLocked={boardsLocked}
-        groups={groups}
-        onAddTask={addTask}
-        onGenerateBoards={generateBoards}
-        onRemoveTask={removeTask}
-        onSaveGroupBoard={saveGroupBoard}
-        onUpdateTask={updateTask}
-        submissions={submissions}
-        tasks={tasks}
-      />
+      {hostArea === "setup" && (
+        <>
+          <section className="host-setup-intro" aria-labelledby="setup-heading">
+            <div>
+              <p className="label">Before players begin</p>
+              <h2 id="setup-heading">Build the hunt one step at a time.</h2>
+              <p>Set the teams, make the boards, then plan the route.</p>
+            </div>
+            <ol className="host-setup-steps">
+              {setupSteps.map((step, index) => (
+                <li key={step.id}>
+                  <button
+                    aria-current={setupStep === step.id ? "step" : undefined}
+                    className={[
+                      setupStep === step.id ? "is-active" : "",
+                      step.complete ? "is-complete" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    type="button"
+                    onClick={() => setSetupStep(step.id)}
+                  >
+                    <span>{step.complete ? <Check aria-hidden="true" /> : index + 1}</span>
+                    <span>
+                      <strong>{step.label}</strong>
+                      <small>{step.detail}</small>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </section>
 
-      <TeamManagementPanel
-        isAddingGroup={isAddingGroup}
-        groups={groups}
-        kickingMembershipId={kickingMembershipId}
-        memberships={memberships}
-        onAddGroup={addGroup}
-        movingMembershipId={movingMembershipId}
-        onKickPlayer={kickPlayer}
-        onMovePlayer={movePlayer}
-        submissions={submissions}
-      />
+          {setupStep === "teams" && (
+            <section className="host-step-panel" aria-labelledby="setup-teams-heading">
+              <div className="host-step-heading">
+                <div>
+                  <p className="label">Step 1</p>
+                  <h2 id="setup-teams-heading">Name your teams</h2>
+                  <p>Add or rename teams now. Players will choose from this list.</p>
+                </div>
+                <span>{groups.length === 1 ? "1 team" : `${groups.length} teams`}</span>
+              </div>
+              <TeamManagementPanel
+                isAddingGroup={isAddingGroup}
+                groups={groups}
+                kickingMembershipId={kickingMembershipId}
+                memberships={memberships}
+                onAddGroup={addGroup}
+                movingMembershipId={movingMembershipId}
+                onKickPlayer={kickPlayer}
+                onMovePlayer={movePlayer}
+                showHeading={false}
+                submissions={submissions}
+              />
+              <div className="host-step-actions">
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={() => setSetupStep("boards")}
+                >
+                  Next: make the boards
+                </button>
+              </div>
+            </section>
+          )}
 
-      <section className="host-groups" aria-labelledby="teams-heading">
-        <div className="section-heading">
-          <div>
-            <p className="label">Teams</p>
-            <h2 id="teams-heading">Progress check</h2>
-          </div>
-          <span>{pendingCount} pending</span>
-        </div>
+          {setupStep === "boards" && (
+            <section className="host-step-panel" aria-labelledby="setup-boards-heading">
+              <div className="host-step-heading">
+                <div>
+                  <p className="label">Step 2</p>
+                  <h2 id="setup-boards-heading">Make the boards</h2>
+                  <p>Adjust the task pool, then generate or fine-tune each team board.</p>
+                </div>
+                <span>{boardsReady ? "Ready" : "In progress"}</span>
+              </div>
+              <BoardEditor
+                boardAssignments={boardAssignments}
+                boardsLocked={boardsLocked}
+                groups={groups}
+                onAddTask={addTask}
+                onGenerateBoards={generateBoards}
+                onRemoveTask={removeTask}
+                onSaveGroupBoard={saveGroupBoard}
+                onUpdateTask={updateTask}
+                openByDefault
+                showHeading={false}
+                submissions={submissions}
+                tasks={tasks}
+              />
+              <div className="host-step-actions">
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => setSetupStep("teams")}
+                >
+                  Back
+                </button>
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={() => setSetupStep("route")}
+                >
+                  Next: plan the route
+                </button>
+              </div>
+            </section>
+          )}
 
-        <div className="team-cards">
-          {groups.map((group) => (
-            <TeamCard
-              key={group.id}
-              group={group}
-              isSelected={selectedHostGroupId === group.id}
-              onSelect={() => setSelectedHostGroupId(group.id)}
-              submissions={submissions}
-              tasks={getGroupBoardTasks(group.id, tasks, boardAssignments)}
-            />
-          ))}
-        </div>
-      </section>
-
-      {selectedGroup && (
-        <HostLiveBoard
-          group={selectedGroup}
-          onClose={() => setSelectedHostGroupId("")}
-          setSubmissionStatus={setSubmissionStatus}
-          submissions={submissions}
-          tasks={getGroupBoardTasks(selectedGroup.id, tasks, boardAssignments)}
-        />
+          {setupStep === "route" && (
+            <section className="host-step-panel" aria-labelledby="setup-route-heading">
+              <div className="host-step-heading">
+                <div>
+                  <p className="label">Step 3</p>
+                  <h2 id="setup-route-heading">Plan the route</h2>
+                  <p>Set each stop and its timing. You can still edit this later.</p>
+                </div>
+                <span>{stops.length === 1 ? "1 stop" : `${stops.length} stops`}</span>
+              </div>
+              <div className="stop-editor-list">
+                {stops.map((stop, index) => (
+                  <Fragment key={stop.id}>
+                    <StopEditor
+                      canRemove={stops.length > 1}
+                      index={index}
+                      isActive={game.phase === "live" && index === activeStopIndex}
+                      isExpanded={expandedStopId === stop.id}
+                      onRemove={() => removeStop(stop.id)}
+                      onSave={() => setExpandedStopId("")}
+                      onToggle={() =>
+                        setExpandedStopId(expandedStopId === stop.id ? "" : stop.id)
+                      }
+                      stop={stop}
+                      stopCount={stops.length}
+                      updateStop={updateStop}
+                    />
+                  </Fragment>
+                ))}
+              </div>
+              <button className="add-stop-button" type="button" onClick={addStop}>
+                <Plus aria-hidden="true" />
+                Add stop
+              </button>
+              <div className="host-step-actions">
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => setSetupStep("boards")}
+                >
+                  Back
+                </button>
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={() => goToPlayTime(-1)}
+                >
+                  <Play aria-hidden="true" />
+                  Start the hunt
+                </button>
+              </div>
+            </section>
+          )}
+        </>
       )}
 
-      <section aria-labelledby="submission-heading">
-        <div className="section-heading">
-          <div>
-            <p className="label">Submission log</p>
-            <h2 id="submission-heading">Photos received</h2>
-          </div>
-          <span>{game.phase === "review" ? "Review mode" : "Newest first"}</span>
-        </div>
+      {hostArea === "run" && (
+        <>
+          <section className="host-command-deck" aria-labelledby="run-heading">
+            <div className="host-command-summary">
+              <div>
+                <p className="label">Hunt control</p>
+                <h2 id="run-heading">{routeDisplay.title}</h2>
+                <p>{routeDisplay.detail}</p>
+              </div>
+              <div
+                className={
+                  timerDisplay.state === "countdown"
+                    ? "timer-block"
+                    : "timer-block is-status"
+                }
+              >
+                <span>{timerDisplay.label}</span>
+                <small>{timerDisplay.caption}</small>
+              </div>
+            </div>
+            <div className="host-command-actions">
+              {game.phase === "review" ? (
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={() => setHuntPhase("live")}
+                >
+                  <Play aria-hidden="true" />
+                  Return to schedule
+                </button>
+              ) : (
+                <button
+                  className="primary-action"
+                  disabled={activeStopIndex >= stops.length - 1}
+                  type="button"
+                  onClick={() =>
+                    game.phase === "play"
+                      ? goToNextStop()
+                      : goToPlayTime(activeStopIndex)
+                  }
+                >
+                  {game.phase === "play" ? (
+                    <Flag aria-hidden="true" />
+                  ) : (
+                    <Play aria-hidden="true" />
+                  )}
+                  {isOpeningPlay
+                    ? "Start Stop 1"
+                    : game.phase === "play"
+                      ? "Start next stop"
+                      : "Start play time"}
+                </button>
+              )}
+              {game.phase !== "review" && (
+                <button className="control-button" type="button" onClick={addFiveMinutes}>
+                  <Clock aria-hidden="true" />
+                  Add 5 min
+                </button>
+              )}
+              <button
+                aria-pressed={!game.boardHidden}
+                className="control-button"
+                type="button"
+                onClick={() => setBoardHidden(!game.boardHidden)}
+              >
+                {game.boardHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+                {game.boardHidden ? "Show board" : "Hide board"}
+              </button>
+              {game.phase !== "review" && (
+                <button
+                  className="control-button end-hunt-action"
+                  type="button"
+                  onClick={() => setHuntPhase("review")}
+                >
+                  <Check aria-hidden="true" />
+                  End hunt
+                </button>
+              )}
+            </div>
+          </section>
 
-        <ProofList
-          groups={groups}
-          huntPhase={game.phase}
-          setSubmissionStatus={setSubmissionStatus}
-          submissions={submissions}
-          tasks={tasks}
-        />
-      </section>
+          <section className="host-groups" aria-labelledby="teams-heading">
+            <div className="section-heading">
+              <div>
+                <p className="label">Live progress</p>
+                <h2 id="teams-heading">Check in on teams</h2>
+              </div>
+              <span>{pendingCount} pending</span>
+            </div>
+            <div className="team-cards">
+              {groups.map((group) => (
+                <TeamCard
+                  key={group.id}
+                  group={group}
+                  isSelected={selectedHostGroupId === group.id}
+                  onSelect={() => setSelectedHostGroupId(group.id)}
+                  submissions={submissions}
+                  tasks={getGroupBoardTasks(group.id, tasks, boardAssignments)}
+                />
+              ))}
+            </div>
+          </section>
+
+          {selectedGroup && (
+            <HostLiveBoard
+              group={selectedGroup}
+              onClose={() => setSelectedHostGroupId("")}
+              setSubmissionStatus={setSubmissionStatus}
+              submissions={submissions}
+              tasks={getGroupBoardTasks(selectedGroup.id, tasks, boardAssignments)}
+            />
+          )}
+
+          <section aria-labelledby="submission-heading">
+            <div className="section-heading">
+              <div>
+                <p className="label">Photos</p>
+                <h2 id="submission-heading">Review submissions</h2>
+              </div>
+              <span>{game.phase === "review" ? "Review mode" : "Newest first"}</span>
+            </div>
+            <ProofList
+              groups={groups}
+              huntPhase={game.phase}
+              setSubmissionStatus={setSubmissionStatus}
+              submissions={submissions}
+              tasks={tasks}
+            />
+          </section>
+        </>
+      )}
+
+      {hostArea === "manage" && (
+        <section className="host-manage-panel" aria-labelledby="manage-heading">
+          <div>
+            <p className="label">Less-frequent controls</p>
+            <h2 id="manage-heading">Edit or reset the hunt</h2>
+            <p>Return to any setup step to adjust the teams, boards, or route.</p>
+          </div>
+          <div className="host-manage-links">
+            {setupSteps.map((step) => (
+              <button
+                key={step.id}
+                className="control-button"
+                type="button"
+                onClick={() => {
+                  setSetupStep(step.id);
+                  setHostArea("setup");
+                }}
+              >
+                {step.label}
+                <span>{step.detail}</span>
+              </button>
+            ))}
+          </div>
+          <div className="host-danger-zone">
+            <div>
+              <strong>Start over or close the room</strong>
+              <span>These actions affect the whole hunt and cannot be undone.</span>
+            </div>
+            <div>
+              <button className="control-button danger" type="button" onClick={resetGameProofs}>
+                <Trash2 aria-hidden="true" />
+                Reset game
+              </button>
+              <button
+                className="control-button danger is-critical"
+                type="button"
+                onClick={abandonGame}
+              >
+                <X aria-hidden="true" />
+                Abandon game
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -2829,6 +3011,7 @@ function TeamManagementPanel({
   onAddGroup,
   onKickPlayer,
   onMovePlayer,
+  showHeading = true,
   submissions,
 }: {
   groups: Group[];
@@ -2839,6 +3022,7 @@ function TeamManagementPanel({
   onAddGroup: (groupName: string) => Promise<boolean>;
   onKickPlayer: (membershipId: string) => void;
   onMovePlayer: (membershipId: string, groupId: string) => void;
+  showHeading?: boolean;
   submissions: Submission[];
 }) {
   const nextGroupName = `Team ${groups.length + 1}`;
@@ -2930,14 +3114,20 @@ function TeamManagementPanel({
   }
 
   return (
-    <section className="host-roster" aria-labelledby="roster-heading">
-      <div className="section-heading">
-        <div>
-          <p className="label">Players</p>
-          <h2 id="roster-heading">Team management</h2>
+    <section
+      className="host-roster"
+      aria-label={showHeading ? undefined : "Team setup"}
+      aria-labelledby={showHeading ? "roster-heading" : undefined}
+    >
+      {showHeading && (
+        <div className="section-heading">
+          <div>
+            <p className="label">Players</p>
+            <h2 id="roster-heading">Team management</h2>
+          </div>
+          <span>{players.length === 1 ? "1 player" : `${players.length} players`}</span>
         </div>
-        <span>{players.length === 1 ? "1 player" : `${players.length} players`}</span>
-      </div>
+      )}
 
       <form className="add-team-form" onSubmit={handleAddGroup}>
         <label className="visually-hidden" htmlFor="new-team-name">
@@ -3070,6 +3260,8 @@ function BoardEditor({
   onRemoveTask,
   onSaveGroupBoard,
   onUpdateTask,
+  openByDefault = false,
+  showHeading = true,
   submissions,
   tasks,
 }: {
@@ -3084,10 +3276,12 @@ function BoardEditor({
     taskId: string,
     patch: Partial<Pick<Task, "title" | "description" | "icon" | "free">>,
   ) => void;
+  openByDefault?: boolean;
+  showHeading?: boolean;
   submissions: Submission[];
   tasks: Task[];
 }) {
-  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [isCollapsed, setIsCollapsed] = useState(!openByDefault);
   const [selectedGroupId, setSelectedGroupId] = useState(groups[0]?.id ?? "");
   const sortedTasks = useMemo(() => getSortedTasks(tasks), [tasks]);
   const assignedCounts = useMemo(() => {
@@ -3121,29 +3315,32 @@ function BoardEditor({
   return (
     <section
       className={isCollapsed ? "host-board-editor is-collapsed" : "host-board-editor"}
-      aria-labelledby="board-editor-heading"
+      aria-label={showHeading ? undefined : "Board editor"}
+      aria-labelledby={showHeading ? "board-editor-heading" : undefined}
     >
-      <div className="section-heading">
-        <div>
-          <p className="label">Board editor</p>
-          <h2 id="board-editor-heading">Task pool and group boards</h2>
+      {showHeading && (
+        <div className="section-heading">
+          <div>
+            <p className="label">Board editor</p>
+            <h2 id="board-editor-heading">Task pool and group boards</h2>
+          </div>
+          <div className="board-editor-heading-actions">
+            <span>
+              {boardsLocked ? "Assignments locked" : `${tasks.length} pool tasks`}
+            </span>
+            <button
+              aria-controls="board-editor-body"
+              aria-expanded={!isCollapsed}
+              className="board-editor-toggle"
+              type="button"
+              onClick={() => setIsCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronDown aria-hidden="true" />
+              {isCollapsed ? "Expand" : "Collapse"}
+            </button>
+          </div>
         </div>
-        <div className="board-editor-heading-actions">
-          <span>
-            {boardsLocked ? "Assignments locked" : `${tasks.length} pool tasks`}
-          </span>
-          <button
-            aria-controls="board-editor-body"
-            aria-expanded={!isCollapsed}
-            className="board-editor-toggle"
-            type="button"
-            onClick={() => setIsCollapsed((collapsed) => !collapsed)}
-          >
-            <ChevronDown aria-hidden="true" />
-            {isCollapsed ? "Expand" : "Collapse"}
-          </button>
-        </div>
-      </div>
+      )}
 
       {!isCollapsed && (
         <div id="board-editor-body" className="board-editor-body">
@@ -5565,7 +5762,13 @@ function clearStoredPlayer() {
 }
 
 function readInitialGameCode() {
-  return readGameCodeFromUrl() || readStoredGameCode();
+  const linkedGameCode = readGameCodeFromUrl();
+
+  if (linkedGameCode) {
+    return linkedGameCode;
+  }
+
+  return window.location.pathname === "/host" ? readStoredGameCode() : "";
 }
 
 function readGameCodeFromUrl() {
