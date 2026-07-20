@@ -1,5 +1,12 @@
 export type SubmissionStatus = "pending" | "approved" | "retake";
 export type HuntPhase = "live" | "play" | "review";
+export type PlayMode = "teams" | "individual";
+export type WinCondition = "blackout" | "bingo";
+export type BoardMode = "shared" | "randomized";
+export type ProofMode = "required" | "optional" | "none";
+export type ApprovalMode = "host" | "automatic";
+export type TimerMode = "none" | "duration" | "schedule";
+export type BoardSize = 3 | 4 | 5;
 
 export type StoredGame = {
   id: string;
@@ -11,6 +18,18 @@ export type StoredGame = {
   timerStartedAt: string;
   timerSecondsTotal: number;
   boardHidden: boolean;
+  setupComplete: boolean;
+  playMode: PlayMode;
+  winCondition: WinCondition;
+  boardSize: BoardSize;
+  boardMode: BoardMode;
+  freeSpace: boolean;
+  proofMode: ProofMode;
+  approvalMode: ApprovalMode;
+  timerMode: TimerMode;
+  timerDurationMinutes: number;
+  lobbyOpen: boolean;
+  teamsLocked: boolean;
 };
 
 export type StoredGroup = {
@@ -53,6 +72,7 @@ export type StoredMembership = {
   groupId: string | null;
   displayName: string;
   createdAt: number;
+  isOwner?: boolean;
 };
 
 export type StoredSubmission = {
@@ -70,7 +90,7 @@ export type StoredSubmission = {
 };
 
 export type StoredRoom = {
-  version: 1;
+  version: 2;
   createdAt: number;
   expiresAt: number;
   pinSalt: string;
@@ -152,15 +172,11 @@ export function createStarterRoom({
   now?: number;
 }): StoredRoom {
   const gameId = crypto.randomUUID();
-  const groups: StoredGroup[] = [
-    group("team-1", "Team 1", "blue", 1),
-    group("team-2", "Team 2", "green", 2),
-    group("team-3", "Team 3", "gold", 3),
-  ];
+  const groups: StoredGroup[] = [];
   const tasks = STARTER_TASKS.map((item) => ({ ...item }));
 
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     expiresAt: now + 7 * 24 * 60 * 60 * 1000,
     pinSalt,
@@ -169,21 +185,29 @@ export function createStarterRoom({
       id: gameId,
       code,
       name: `${code} Scavenger Hunt`,
-      phase: "play",
+      phase: "review",
       activeStopId: null,
       timerRunning: false,
       timerStartedAt: new Date(now).toISOString(),
       timerSecondsTotal: 0,
       boardHidden: true,
+      setupComplete: false,
+      playMode: "teams",
+      winCondition: "blackout",
+      boardSize: 5,
+      boardMode: "randomized",
+      freeSpace: true,
+      proofMode: "required",
+      approvalMode: "host",
+      timerMode: "none",
+      timerDurationMinutes: 60,
+      lobbyOpen: true,
+      teamsLocked: false,
     },
     groups,
     tasks,
-    boardAssignments: createBoards(groups, tasks),
-    stops: [
-      stop("opening-stop", "Opening Stop", "Regroup here before the first play window starts.", "10:30 AM", "11:00 AM", 1),
-      stop("midpoint-stop", "Midpoint Stop", "Meet here before the next play window starts.", "11:30 AM", "12:15 PM", 2),
-      stop("finish-stop", "Finish Stop", "Gather here to review proof photos and wrap the game.", "12:45 PM", "1:15 PM", 3),
-    ],
+    boardAssignments: [],
+    stops: [],
     memberships: [],
     submissions: [],
   };
@@ -192,23 +216,37 @@ export function createStarterRoom({
 export function createBoards(
   groups: StoredGroup[],
   tasks: StoredTask[],
+  boardSize: BoardSize = 5,
+  boardMode: BoardMode = "randomized",
+  includeFreeSpace = true,
 ): StoredBoardAssignment[] {
-  return groups.flatMap((item) => createBoardForGroup(item.id, tasks));
+  return groups.flatMap((item) =>
+    createBoardForGroup(item.id, tasks, boardSize, boardMode, includeFreeSpace),
+  );
 }
 
 export function createBoardForGroup(
   groupId: string,
   tasks: StoredTask[],
+  boardSize: BoardSize = 5,
+  boardMode: BoardMode = "randomized",
+  includeFreeSpace = true,
 ): StoredBoardAssignment[] {
   const sorted = [...tasks].sort((a, b) => a.sortOrder - b.sortOrder);
-  const centerTask = sorted.find((item) => item.free);
+  const centerTask = includeFreeSpace && boardSize % 2 === 1
+    ? sorted.find((item) => item.free)
+    : undefined;
   const nonFree = sorted.filter((item) => !item.free);
-  const shared = nonFree.slice(0, 4);
+  const slotCount = boardSize * boardSize;
+  const sharedCount = Math.min(4, Math.max(1, boardSize - 1));
+  const shared = nonFree.slice(0, sharedCount);
+  const boardSeed = boardMode === "shared" ? "shared" : groupId;
   const varied = nonFree
     .filter((item) => !shared.some((sharedTask) => sharedTask.id === item.id))
-    .sort((a, b) => stableHash(`${groupId}:${a.id}`) - stableHash(`${groupId}:${b.id}`));
-  const slots = Array.from({ length: 25 }, (_, index) => index + 1).filter(
-    (slot) => slot > 4 && (slot !== 13 || !centerTask),
+    .sort((a, b) => stableHash(`${boardSeed}:${a.id}`) - stableHash(`${boardSeed}:${b.id}`));
+  const centerSlot = Math.floor(slotCount / 2) + 1;
+  const slots = Array.from({ length: slotCount }, (_, index) => index + 1).filter(
+    (slot) => slot > sharedCount && (slot !== centerSlot || !centerTask),
   );
   const assignments = shared.map((item, index) => ({
     groupId,
@@ -221,10 +259,40 @@ export function createBoardForGroup(
   });
 
   if (centerTask) {
-    assignments.push({ groupId, taskId: centerTask.id, slotOrder: 13 });
+    assignments.push({ groupId, taskId: centerTask.id, slotOrder: centerSlot });
   }
 
   return assignments.sort((a, b) => a.slotOrder - b.slotOrder);
+}
+
+export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): StoredRoom {
+  const room = storedRoom as StoredRoom;
+  const legacyGame = room.game as StoredGame & Partial<StoredGame>;
+  const isLegacy = Number((storedRoom as { version?: number }).version ?? 1) < 2;
+
+  room.version = 2;
+  room.game = {
+    ...legacyGame,
+    setupComplete: legacyGame.setupComplete ?? isLegacy,
+    playMode: legacyGame.playMode ?? "teams",
+    winCondition: legacyGame.winCondition ?? "blackout",
+    boardSize: legacyGame.boardSize ?? 5,
+    boardMode: legacyGame.boardMode ?? "randomized",
+    freeSpace: legacyGame.freeSpace ?? true,
+    proofMode: legacyGame.proofMode ?? "required",
+    approvalMode: legacyGame.approvalMode ?? "host",
+    timerMode: legacyGame.timerMode ?? (room.stops.length > 0 ? "schedule" : "none"),
+    timerDurationMinutes: legacyGame.timerDurationMinutes ?? 60,
+    lobbyOpen: legacyGame.lobbyOpen ?? true,
+    teamsLocked: legacyGame.teamsLocked ?? false,
+  };
+  room.memberships = room.memberships.map((membership, index) => ({
+    ...membership,
+    ...(membership.role === "host" && membership.isOwner === undefined
+      ? { isOwner: index === room.memberships.findIndex((item) => item.role === "host") }
+      : {}),
+  }));
+  return room;
 }
 
 export function toPublicGroup(groupValue: StoredGroup) {

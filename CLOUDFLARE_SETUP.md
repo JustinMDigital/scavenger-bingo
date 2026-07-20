@@ -42,9 +42,9 @@ from the project's **Settings > Domains & Routes** page, but is optional.
 - Abandoning a room deletes it immediately.
 - At most 40 rooms can be active at once.
 - One internet connection can create at most two rooms per day.
-- A room can have at most eight teams.
+- A room can have at most eight teams or 100 individual participants.
 - Proof photos are compressed in the browser and capped at 500 KB.
-- Proofs are private to their team and the host.
+- Proofs are private to their team or individual board and the host.
 - Host access uses a 4-32 character PIN stored only as a one-way hash.
 - Live updates use sleeping WebSocket connections so idle rooms do not keep a
   server running.
@@ -72,4 +72,3 @@ There is no database to pause, migration service to operate, or storage bucket t
 clean manually. Cloudflare handles the runtime and automatically wakes a room
 when it receives traffic. The only expected maintenance is publishing app updates
 and occasionally checking the free-usage dashboard if public traffic grows.
-

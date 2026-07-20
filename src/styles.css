@@ -1046,7 +1046,7 @@ img {
 
 .blackout-board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--board-size, 5), minmax(0, 1fr));
   gap: 0.28rem;
 }
 
@@ -2239,13 +2239,63 @@ img {
 }
 
 .task-pool-row {
-  display: grid;
-  grid-template-columns: 2.5rem minmax(0, 1fr);
-  gap: var(--space-sm);
+  display: block;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
   padding: var(--space-sm);
+}
+
+.task-pool-summary {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+  list-style: none;
+}
+
+.task-pool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-pool-summary > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.task-pool-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 950;
+}
+
+.task-pool-summary small,
+.task-pool-summary em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-pool-summary > svg {
+  width: 1rem;
+  transition: transform 160ms var(--ease-out);
+}
+
+.task-pool-row[open] .task-pool-summary > svg {
+  transform: rotate(180deg);
+}
+
+.task-pool-edit-fields {
+  margin-block-start: var(--space-sm);
+  padding-inline-start: calc(2.5rem + var(--space-xs));
 }
 
 .task-pool-icon {
@@ -2343,7 +2393,7 @@ img {
 
 .board-slot-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--board-size, 5), minmax(0, 1fr));
   gap: var(--space-xs);
 }
 
@@ -3499,6 +3549,184 @@ img {
   .task-pool-actions > div {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+.game-template-grid,
+.room-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xs);
+}
+
+.game-template-grid button,
+.room-management-card {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-sm);
+  color: var(--ink);
+  text-align: left;
+}
+
+.game-template-grid button:not(:disabled):hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.game-template-grid strong,
+.room-management-card strong {
+  font-size: 0.98rem;
+  font-weight: 950;
+}
+
+.game-template-grid span,
+.room-management-card > span,
+.room-management-card small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.game-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-md);
+}
+
+.game-settings-grid .game-name-field,
+.game-settings-grid > .task-free-toggle {
+  grid-column: 1 / -1;
+}
+
+.game-settings-grid select,
+.team-settings-row select,
+.game-settings-grid input {
+  min-height: 2.8rem;
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--ink);
+  padding-inline: var(--space-sm);
+  font: inherit;
+  font-weight: 800;
+}
+
+.team-settings-list,
+.individual-roster-list {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.team-settings-row {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 2fr) minmax(8rem, 1fr) auto auto auto;
+  align-items: end;
+  gap: var(--space-xs);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-sm);
+}
+
+.team-settings-row .waiting-team-mark {
+  align-self: center;
+}
+
+.team-order-actions {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.team-order-actions button {
+  min-height: 2.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  padding-inline: 0.55rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.task-search-field {
+  margin-block: var(--space-xs);
+}
+
+.host-chip-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+  margin-inline-start: 0.4rem;
+}
+
+.host-chip-actions button {
+  border-radius: 999px;
+  background: white;
+  padding: 0.2rem 0.45rem;
+  color: inherit;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.room-management-card .secondary-action {
+  justify-self: start;
+  margin-block-start: var(--space-xs);
+}
+
+.invite-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.invite-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+}
+
+.invite-card canvas {
+  width: 7rem !important;
+  height: 7rem !important;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: white;
+  padding: 0.25rem;
+}
+
+@media (max-width: 700px) {
+  .game-template-grid,
+  .game-settings-grid,
+  .room-management-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .game-settings-grid .game-name-field,
+  .game-settings-grid > .task-free-toggle {
+    grid-column: auto;
+  }
+
+  .team-settings-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .invite-card {
+    grid-template-columns: 1fr;
+  }
+
+  .team-settings-row .field,
+  .team-settings-row .secondary-action,
+  .team-settings-row .team-order-actions {
+    grid-column: 2;
   }
 }
 

@@ -2,10 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import {
   GROUP_COLOR_KEYS,
   createBoardForGroup,
+  createBoards,
   createStarterRoom,
   toPublicGroup,
+  upgradeRoom,
 } from "./model";
 import type {
+  BoardSize,
   HuntPhase,
   StoredBoardAssignment,
   StoredGroup,
@@ -199,7 +202,8 @@ export class GameRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.room = (await ctx.storage.get<StoredRoom>(ROOM_KEY)) ?? null;
+      const storedRoom = (await ctx.storage.get<StoredRoom>(ROOM_KEY)) ?? null;
+      this.room = storedRoom ? upgradeRoom(storedRoom) : null;
     });
   }
 
@@ -298,7 +302,9 @@ export class GameRoom extends DurableObject<Env> {
       throw new HttpError(400, "Host PIN must be 4 to 32 characters.");
     }
 
-    if (!this.room) {
+    const isCreatingRoom = !this.room;
+
+    if (isCreatingRoom) {
       if (request.headers.get("x-scavenger-allow-create") !== "1") {
         throw new HttpError(404, `No active game found for ${code}.`);
       }
@@ -309,9 +315,10 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(this.room.expiresAt);
     } else {
       this.checkHostRateLimit(rateLimitKey);
-      const candidateHash = await hashPin(this.room.pinSalt, pin);
+      const existingRoom = this.requireRoom();
+      const candidateHash = await hashPin(existingRoom.pinSalt, pin);
 
-      if (!constantTimeEqual(candidateHash, this.room.pinHash)) {
+      if (!constantTimeEqual(candidateHash, existingRoom.pinHash)) {
         this.recordFailedHostAttempt(rateLimitKey);
         throw new HttpError(403, "Invalid host PIN.");
       }
@@ -330,6 +337,7 @@ export class GameRoom extends DurableObject<Env> {
           role: "host",
           groupId: null,
           displayName,
+          isOwner: existing.isOwner ?? !room.memberships.some((item) => item.isOwner),
         }
       : {
           id: crypto.randomUUID(),
@@ -339,6 +347,7 @@ export class GameRoom extends DurableObject<Env> {
           groupId: null,
           displayName,
           createdAt: Date.now(),
+          isOwner: isCreatingRoom || !room.memberships.some((item) => item.isOwner),
         };
 
     room.memberships = [
@@ -358,11 +367,10 @@ export class GameRoom extends DurableObject<Env> {
       displayName?: string;
     }>(request);
     requireGameId(room, body.gameId);
-    const groupId = body.groupId ?? "";
     const displayName = cleanName(body.displayName, "Name");
 
-    if (!room.groups.some((item) => item.id === groupId)) {
-      throw new HttpError(400, "Choose a valid team.");
+    if (!room.game.lobbyOpen) {
+      throw new HttpError(409, "The host has closed this lobby.");
     }
 
     const existing = room.memberships.find((item) => item.userId === sessionId);
@@ -373,10 +381,37 @@ export class GameRoom extends DurableObject<Env> {
       throw new HttpError(409, "This room has reached its player limit.");
     }
 
+    const membershipId = existing?.id ?? crypto.randomUUID();
+    let groupId: string;
+
+    if (room.game.playMode === "individual") {
+      groupId = membershipId;
+    } else if (room.game.teamsLocked && existing?.groupId) {
+      groupId = existing.groupId;
+    } else if (room.game.teamsLocked) {
+      const playerCounts = new Map(room.groups.map((group) => [group.id, 0]));
+      room.memberships.forEach((item) => {
+        if (item.role === "player" && item.groupId && playerCounts.has(item.groupId)) {
+          playerCounts.set(item.groupId, (playerCounts.get(item.groupId) ?? 0) + 1);
+        }
+      });
+      groupId = [...room.groups]
+        .sort((first, second) =>
+          (playerCounts.get(first.id) ?? 0) - (playerCounts.get(second.id) ?? 0) ||
+          first.sortOrder - second.sortOrder,
+        )[0]?.id ?? "";
+    } else {
+      groupId = body.groupId ?? existing?.groupId ?? "";
+    }
+
+    if (room.game.playMode === "teams" && !room.groups.some((item) => item.id === groupId)) {
+      throw new HttpError(400, "Choose a valid team.");
+    }
+
     const membership: StoredMembership = existing
       ? { ...existing, groupId, displayName }
       : {
-          id: crypto.randomUUID(),
+          id: membershipId,
           gameId: room.game.id,
           userId: sessionId,
           role: "player",
@@ -384,6 +419,20 @@ export class GameRoom extends DurableObject<Env> {
           displayName,
           createdAt: Date.now(),
         };
+
+    if (
+      room.game.playMode === "individual" &&
+      !room.boardAssignments.some((item) => item.groupId === membership.id)
+    ) {
+      room.boardAssignments.push(
+        ...createBoardForGroup(
+          membership.id,
+          room.tasks,
+          room.game.boardSize,
+          room.game.boardMode,
+        ),
+      );
+    }
 
     room.memberships = [
       ...room.memberships.filter((item) => item.userId !== sessionId),
@@ -405,12 +454,17 @@ export class GameRoom extends DurableObject<Env> {
     );
     const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
     requireGameId(room, gameId);
+    const ownerId = getMembershipOwnerId(room, membership);
 
-    if (membership.groupId !== groupId) {
-      throw new HttpError(403, "Players can only submit for their own team.");
+    if (ownerId !== groupId) {
+      throw new HttpError(403, "Players can only submit for their own board.");
     }
     if (room.game.boardHidden) {
       throw new HttpError(409, "The board is hidden until the host starts the hunt.");
+    }
+
+    if (room.game.proofMode === "none") {
+      throw new HttpError(409, "This game does not use photo proof.");
     }
 
     const task = room.tasks.find((item) => item.id === taskId);
@@ -440,7 +494,7 @@ export class GameRoom extends DurableObject<Env> {
           submittedByName: membership.displayName,
           imageName,
           contentType,
-          status: "pending",
+          status: room.game.approvalMode === "automatic" ? "approved" : "pending",
           updatedAt: now,
         }
       : {
@@ -452,7 +506,7 @@ export class GameRoom extends DurableObject<Env> {
           imagePath: "",
           imageName,
           contentType,
-          status: "pending",
+          status: room.game.approvalMode === "automatic" ? "approved" : "pending",
           createdAt: now,
           updatedAt: now,
         };
@@ -476,7 +530,10 @@ export class GameRoom extends DurableObject<Env> {
     if (!membership || !submission) {
       throw new HttpError(404, "Proof photo not found.");
     }
-    if (membership.role !== "host" && membership.groupId !== submission.groupId) {
+    if (
+      membership.role !== "host" &&
+      getMembershipOwnerId(room, membership) !== submission.groupId
+    ) {
       throw new HttpError(403, "This proof belongs to another team.");
     }
 
@@ -495,13 +552,81 @@ export class GameRoom extends DurableObject<Env> {
 
   private async performAction(request: Request, sessionId: string, origin: string) {
     const room = this.requireRoom();
-    requireHost(room, sessionId);
     const body = await readJson<ActionRequest>(request);
     const payload = body.payload ?? {};
     let data: unknown = null;
 
+    if (body.action === "completeTask") {
+      const membership = requirePlayer(room, sessionId);
+      requireGameId(room, payload.gameId);
+      if (room.game.boardHidden) {
+        throw new HttpError(409, "The board is hidden until the host starts the game.");
+      }
+      if (room.game.proofMode === "required") {
+        throw new HttpError(409, "This task requires photo proof.");
+      }
+      const ownerId = getMembershipOwnerId(room, membership);
+      const taskId = stringValue(payload.taskId);
+      const task = room.tasks.find((item) => item.id === taskId);
+      const isAssigned = room.boardAssignments.some(
+        (item) => item.groupId === ownerId && item.taskId === taskId,
+      );
+      if (!task || !isAssigned || task.free) {
+        throw new HttpError(400, "That task is not available for completion.");
+      }
+      const existing = room.submissions.find(
+        (item) => item.groupId === ownerId && item.taskId === taskId,
+      );
+      if (existing) {
+        room.submissions = room.submissions.filter((item) => item.id !== existing.id);
+        if (existing.imagePath) await this.ctx.storage.delete(proofKey(existing.id));
+        data = null;
+      } else {
+        const now = Date.now();
+        const submission: StoredSubmission = {
+          id: crypto.randomUUID(),
+          groupId: ownerId,
+          taskId,
+          submittedBy: sessionId,
+          submittedByName: membership.displayName,
+          imagePath: "",
+          imageName: "",
+          contentType: "",
+          status: "approved",
+          createdAt: now,
+          updatedAt: now,
+        };
+        room.submissions.unshift(submission);
+        data = publicSubmission(submission, room, origin);
+      }
+      await this.saveRoom();
+      this.broadcast();
+      return json({ data });
+    }
+
+    requireHost(room, sessionId);
+
     switch (body.action) {
+      case "configureGame": {
+        requireGameId(room, payload.gameId);
+        if (room.submissions.length > 0) {
+          throw new HttpError(409, "Reset proofs before changing the game format.");
+        }
+        if (payload.template !== undefined) {
+          applyRoomTemplate(room, stringValue(payload.template), optionalString(payload.startTime));
+        }
+        if (payload.config !== undefined) {
+          applyGameConfiguration(room, objectValue(payload.config));
+        }
+        normalizePlayerOwnership(room);
+        regenerateBoards(room);
+        data = room.game;
+        break;
+      }
       case "movePlayer": {
+        if (room.game.playMode === "individual") {
+          throw new HttpError(409, "Free-for-all players do not belong to teams.");
+        }
         const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
         const groupId = stringValue(payload.groupId);
         if (!room.groups.some((item) => item.id === groupId)) {
@@ -517,8 +642,48 @@ export class GameRoom extends DurableObject<Env> {
         data = publicMembership(membership);
         break;
       }
+      case "promotePlayer": {
+        const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
+        membership.role = "host";
+        membership.groupId = null;
+        membership.isOwner = false;
+        room.boardAssignments = room.boardAssignments.filter(
+          (item) => item.groupId !== membership.id,
+        );
+        data = publicMembership(membership);
+        break;
+      }
+      case "removeCohost": {
+        const currentHost = requireHost(room, sessionId);
+        if (!currentHost.isOwner) throw new HttpError(403, "Only the primary host can remove co-hosts.");
+        const membership = room.memberships.find(
+          (item) => item.id === stringValue(payload.membershipId) && item.role === "host",
+        );
+        if (!membership || membership.isOwner) {
+          throw new HttpError(400, "Choose a co-host.");
+        }
+        room.memberships = room.memberships.filter((item) => item.id !== membership.id);
+        data = publicMembership(membership);
+        break;
+      }
+      case "transferHost": {
+        const currentHost = requireHost(room, sessionId);
+        if (!currentHost.isOwner) throw new HttpError(403, "Only the primary host can transfer ownership.");
+        const nextOwner = room.memberships.find(
+          (item) => item.id === stringValue(payload.membershipId) && item.role === "host",
+        );
+        if (!nextOwner) throw new HttpError(404, "Co-host not found.");
+        room.memberships.forEach((item) => {
+          if (item.role === "host") item.isOwner = item.id === nextOwner.id;
+        });
+        data = publicMembership(nextOwner);
+        break;
+      }
       case "addGroup": {
         requireGameId(room, payload.gameId);
+        if (room.game.playMode !== "teams") {
+          throw new HttpError(409, "Free-for-all games do not use teams.");
+        }
         if (room.groups.length >= MAX_GROUPS_PER_ROOM) {
           throw new HttpError(409, `Rooms can have up to ${MAX_GROUPS_PER_ROOM} teams.`);
         }
@@ -526,8 +691,67 @@ export class GameRoom extends DurableObject<Env> {
         const desiredName = optionalString(payload.name)?.trim() || `Team ${nextOrder}`;
         const group = createGroup(room, desiredName, nextOrder);
         room.groups.push(group);
-        room.boardAssignments.push(...createBoardForGroup(group.id, room.tasks));
+        room.boardAssignments.push(
+          ...createBoardForGroup(
+            group.id,
+            room.tasks,
+            room.game.boardSize,
+            room.game.boardMode,
+            room.game.freeSpace,
+          ),
+        );
         data = toPublicGroup(group);
+        break;
+      }
+      case "updateGroup": {
+        requireGameId(room, payload.gameId);
+        const group = room.groups.find((item) => item.id === stringValue(payload.groupId));
+        if (!group) throw new HttpError(404, "Team not found.");
+        const patch = objectValue(payload.patch);
+        if (patch.name !== undefined) {
+          const name = cleanName(patch.name, "Team name").slice(0, 40);
+          group.name = name;
+          group.shortName = name.slice(0, 24);
+        }
+        if (patch.colorKey !== undefined) {
+          const colorKey = stringValue(patch.colorKey);
+          if (!(GROUP_COLOR_KEYS as readonly string[]).includes(colorKey)) {
+            throw new HttpError(400, "Choose a valid team color.");
+          }
+          group.colorKey = colorKey;
+        }
+        if (patch.sortOrder !== undefined) {
+          const desiredPosition = Math.min(
+            room.groups.length,
+            Math.max(1, positiveInteger(patch.sortOrder, group.sortOrder)),
+          );
+          const reordered = [...room.groups]
+            .filter((item) => item.id !== group.id)
+            .sort((a, b) => a.sortOrder - b.sortOrder);
+          reordered.splice(desiredPosition - 1, 0, group);
+          reordered.forEach((item, index) => {
+            item.sortOrder = index + 1;
+          });
+        }
+        data = toPublicGroup(group);
+        break;
+      }
+      case "removeGroup": {
+        requireGameId(room, payload.gameId);
+        const groupId = stringValue(payload.groupId);
+        if (room.memberships.some((item) => item.role === "player" && item.groupId === groupId)) {
+          throw new HttpError(409, "Move or remove this team's players first.");
+        }
+        if (room.submissions.some((item) => item.groupId === groupId)) {
+          throw new HttpError(409, "Reset proofs before removing this team.");
+        }
+        if (!room.groups.some((item) => item.id === groupId)) {
+          throw new HttpError(404, "Team not found.");
+        }
+        room.groups = room.groups.filter((item) => item.id !== groupId);
+        room.boardAssignments = room.boardAssignments.filter(
+          (item) => item.groupId !== groupId,
+        );
         break;
       }
       case "updateSubmissionStatus": {
@@ -553,6 +777,10 @@ export class GameRoom extends DurableObject<Env> {
       }
       case "abandonGameLobby": {
         requireGameId(room, payload.gameId);
+        const currentHost = requireHost(room, sessionId);
+        if (!currentHost.isOwner) {
+          throw new HttpError(403, "Only the primary host can abandon the room.");
+        }
         const deletedSubmissions = room.submissions.length;
         const removedMemberships = room.memberships.length;
         const code = room.game.code;
@@ -600,11 +828,16 @@ export class GameRoom extends DurableObject<Env> {
           throw new HttpError(409, "Boards lock after proofs arrive.");
         }
         const groupId = stringValue(payload.groupId);
-        if (!room.groups.some((item) => item.id === groupId)) {
-          throw new HttpError(404, "Team not found.");
+        const isValidOwner = room.game.playMode === "teams"
+          ? room.groups.some((item) => item.id === groupId)
+          : room.memberships.some(
+              (item) => item.id === groupId && item.role === "player",
+            );
+        if (!isValidOwner) {
+          throw new HttpError(404, "Board owner not found.");
         }
         const slots = arrayValue(payload.taskIds)
-          .slice(0, 25)
+          .slice(0, room.game.boardSize * room.game.boardSize)
           .map((taskId, index) =>
             taskId === null || taskId === undefined || taskId === ""
               ? null
@@ -647,7 +880,9 @@ export class GameRoom extends DurableObject<Env> {
         break;
       }
       case "removeStop": {
-        if (room.stops.length <= 1) throw new HttpError(409, "Keep at least one stop.");
+        if (room.game.timerMode === "schedule" && room.stops.length <= 1) {
+          throw new HttpError(409, "Scheduled games need at least one stop.");
+        }
         const stopId = stringValue(payload.stopId);
         room.stops = room.stops.filter((item) => item.id !== stopId);
         if (room.game.activeStopId === stopId) room.game.activeStopId = null;
@@ -676,7 +911,9 @@ export class GameRoom extends DurableObject<Env> {
     const visibleSubmissions = isHost
       ? room.submissions
       : isPlayer
-        ? room.submissions.filter((item) => item.groupId === membership.groupId)
+        ? room.submissions.filter(
+            (item) => item.groupId === getMembershipOwnerId(room, membership),
+          )
         : [];
 
     return json({
@@ -934,6 +1171,12 @@ function requirePlayerMembership(room: StoredRoom, membershipId: string) {
   return membership;
 }
 
+function getMembershipOwnerId(room: StoredRoom, membership: StoredMembership) {
+  if (room.game.playMode === "individual") return membership.id;
+  if (!membership.groupId) throw new HttpError(409, "Choose a team first.");
+  return membership.groupId;
+}
+
 function publicMembership(membership: StoredMembership) {
   const { createdAt: _createdAt, ...publicValue } = membership;
   return publicValue;
@@ -1023,6 +1266,7 @@ function applyStopPatch(stop: StoredStop, patch: Record<string, unknown>) {
 }
 
 function applyGamePatch(room: StoredRoom, patch: Record<string, unknown>) {
+  if (patch.name !== undefined) room.game.name = cleanName(patch.name, "Game name");
   if (patch.activeStopId !== undefined) {
     const stopId = patch.activeStopId === null ? null : stringValue(patch.activeStopId);
     if (stopId && !room.stops.some((item) => item.id === stopId)) {
@@ -1047,6 +1291,264 @@ function applyGamePatch(room: StoredRoom, patch: Record<string, unknown>) {
     room.game.timerSecondsTotal = Math.max(0, positiveInteger(patch.timerSecondsTotal, 0));
   }
   if (patch.boardHidden !== undefined) room.game.boardHidden = Boolean(patch.boardHidden);
+  if (patch.setupComplete !== undefined) room.game.setupComplete = Boolean(patch.setupComplete);
+  if (patch.lobbyOpen !== undefined) room.game.lobbyOpen = Boolean(patch.lobbyOpen);
+  if (patch.teamsLocked !== undefined) room.game.teamsLocked = Boolean(patch.teamsLocked);
+}
+
+function applyGameConfiguration(room: StoredRoom, config: Record<string, unknown>) {
+  if (config.name !== undefined) room.game.name = cleanName(config.name, "Game name");
+  if (config.playMode !== undefined) {
+    room.game.playMode = enumValue(config.playMode, ["teams", "individual"] as const, "play mode");
+  }
+  if (config.winCondition !== undefined) {
+    room.game.winCondition = enumValue(
+      config.winCondition,
+      ["blackout", "bingo"] as const,
+      "win condition",
+    );
+  }
+  if (config.boardSize !== undefined) {
+    const boardSize = Number(config.boardSize);
+    if (![3, 4, 5].includes(boardSize)) throw new HttpError(400, "Choose a valid board size.");
+    room.game.boardSize = boardSize as BoardSize;
+  }
+  if (config.boardMode !== undefined) {
+    room.game.boardMode = enumValue(
+      config.boardMode,
+      ["shared", "randomized"] as const,
+      "board style",
+    );
+  }
+  if (config.freeSpace !== undefined) room.game.freeSpace = Boolean(config.freeSpace);
+  if (config.proofMode !== undefined) {
+    room.game.proofMode = enumValue(
+      config.proofMode,
+      ["required", "optional", "none"] as const,
+      "proof mode",
+    );
+  }
+  if (config.approvalMode !== undefined) {
+    room.game.approvalMode = enumValue(
+      config.approvalMode,
+      ["host", "automatic"] as const,
+      "approval mode",
+    );
+  }
+  if (config.timerMode !== undefined) {
+    room.game.timerMode = enumValue(
+      config.timerMode,
+      ["none", "duration", "schedule"] as const,
+      "timer mode",
+    );
+  }
+  if (config.timerDurationMinutes !== undefined) {
+    room.game.timerDurationMinutes = Math.min(
+      1440,
+      Math.max(1, positiveInteger(config.timerDurationMinutes, 60)),
+    );
+    room.game.timerSecondsTotal = room.game.timerDurationMinutes * 60;
+  }
+  if (config.lobbyOpen !== undefined) room.game.lobbyOpen = Boolean(config.lobbyOpen);
+  if (config.teamsLocked !== undefined) room.game.teamsLocked = Boolean(config.teamsLocked);
+  if (config.setupComplete !== undefined) {
+    room.game.setupComplete = Boolean(config.setupComplete);
+  }
+
+  if (room.game.playMode === "individual") {
+    room.groups = [];
+    room.memberships.forEach((membership) => {
+      if (membership.role === "player") membership.groupId = membership.id;
+    });
+  }
+  if (room.game.timerMode !== "schedule") {
+    room.game.activeStopId = null;
+  }
+  if (room.game.timerMode === "none") {
+    room.game.timerRunning = false;
+    room.game.timerSecondsTotal = 0;
+  }
+}
+
+function enumValue<const T extends readonly string[]>(
+  value: unknown,
+  options: T,
+  label: string,
+): T[number] {
+  const parsed = stringValue(value);
+  if (!options.includes(parsed)) {
+    throw new HttpError(400, `Choose a valid ${label}.`);
+  }
+  return parsed as T[number];
+}
+
+function applyRoomTemplate(room: StoredRoom, template: string, startTime?: string) {
+  const templateId = template.trim().toLowerCase();
+  room.game.setupComplete = false;
+  room.game.boardHidden = true;
+  room.game.phase = "review";
+  room.game.activeStopId = null;
+  room.game.timerRunning = false;
+  room.submissions = [];
+
+  if (templateId === "classic") {
+    room.game.playMode = "teams";
+    room.game.winCondition = "blackout";
+    room.game.boardSize = 5;
+    room.game.boardMode = "randomized";
+    room.game.freeSpace = true;
+    room.game.proofMode = "required";
+    room.game.approvalMode = "host";
+    room.game.timerMode = "schedule";
+    room.groups = [
+      createGroup(room, "Team 1", 1),
+      createGroup(room, "Team 2", 2),
+      createGroup(room, "Team 3", 3),
+    ];
+    room.stops = createClassicStops(startTime ?? "10:00 AM");
+    return;
+  }
+
+  if (templateId === "quick") {
+    room.game.playMode = "teams";
+    room.game.winCondition = "bingo";
+    room.game.boardSize = 3;
+    room.game.boardMode = "shared";
+    room.game.freeSpace = true;
+    room.game.proofMode = "required";
+    room.game.approvalMode = "automatic";
+    room.game.timerMode = "duration";
+    room.game.timerDurationMinutes = 30;
+    room.game.timerSecondsTotal = 30 * 60;
+    room.groups = [createGroup(room, "Team 1", 1), createGroup(room, "Team 2", 2)];
+    room.stops = [];
+    return;
+  }
+
+  if (templateId === "free-for-all") {
+    room.game.playMode = "individual";
+    room.game.winCondition = "bingo";
+    room.game.boardSize = 4;
+    room.game.boardMode = "randomized";
+    room.game.freeSpace = false;
+    room.game.proofMode = "optional";
+    room.game.approvalMode = "automatic";
+    room.game.timerMode = "duration";
+    room.game.timerDurationMinutes = 45;
+    room.game.timerSecondsTotal = 45 * 60;
+    room.groups = [];
+    room.stops = [];
+    return;
+  }
+
+  if (templateId === "custom") {
+    room.game.playMode = "teams";
+    room.game.winCondition = "blackout";
+    room.game.boardSize = 5;
+    room.game.boardMode = "randomized";
+    room.game.freeSpace = true;
+    room.game.proofMode = "required";
+    room.game.approvalMode = "host";
+    room.game.timerMode = "none";
+    room.game.timerDurationMinutes = 60;
+    room.game.timerSecondsTotal = 0;
+    room.groups = [];
+    room.stops = [];
+    return;
+  }
+
+  throw new HttpError(400, "Choose a valid game template.");
+}
+
+function regenerateBoards(room: StoredRoom) {
+  const owners = room.game.playMode === "teams"
+    ? room.groups
+    : room.memberships
+        .filter((item) => item.role === "player")
+        .map((item, index) => ({
+          id: item.id,
+          name: item.displayName,
+          shortName: item.displayName,
+          colorKey: GROUP_COLOR_KEYS[index % GROUP_COLOR_KEYS.length],
+          sortOrder: index + 1,
+        }));
+  room.boardAssignments = createBoards(
+    owners,
+    room.tasks,
+    room.game.boardSize,
+    room.game.boardMode,
+    room.game.freeSpace,
+  );
+}
+
+function normalizePlayerOwnership(room: StoredRoom) {
+  const players = room.memberships.filter((item) => item.role === "player");
+  if (room.game.playMode === "individual") {
+    players.forEach((player) => {
+      player.groupId = player.id;
+    });
+    return;
+  }
+
+  const sortedGroups = [...room.groups].sort((a, b) => a.sortOrder - b.sortOrder);
+  players.forEach((player, index) => {
+    if (!sortedGroups.some((group) => group.id === player.groupId)) {
+      player.groupId = sortedGroups[index % sortedGroups.length]?.id ?? null;
+    }
+  });
+}
+
+function createClassicStops(startTime: string): StoredStop[] {
+  const normalizedStart = formatClockMinutes(parseClockMinutes(startTime) ?? 600);
+  return [
+    {
+      id: crypto.randomUUID(),
+      name: "Opening Stop",
+      detail: "Regroup here before the first play window starts.",
+      arriveTime: normalizedStart,
+      leaveTime: addClockMinutes(normalizedStart, 30),
+      sortOrder: 1,
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "Midpoint Stop",
+      detail: "Meet here before the next play window starts.",
+      arriveTime: addClockMinutes(normalizedStart, 60),
+      leaveTime: addClockMinutes(normalizedStart, 90),
+      sortOrder: 2,
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "Finish Stop",
+      detail: "Gather here to review proof photos and wrap the game.",
+      arriveTime: addClockMinutes(normalizedStart, 120),
+      leaveTime: addClockMinutes(normalizedStart, 150),
+      sortOrder: 3,
+    },
+  ];
+}
+
+function addClockMinutes(value: string, amount: number) {
+  return formatClockMinutes((parseClockMinutes(value) ?? 0) + amount);
+}
+
+function parseClockMinutes(value: string) {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return null;
+  let hour = Number(match[1]) % 12;
+  const minute = Number(match[2]);
+  if (minute > 59) return null;
+  if (match[3].toUpperCase() === "PM") hour += 12;
+  return hour * 60 + minute;
+}
+
+function formatClockMinutes(totalMinutes: number) {
+  const minutesInDay = ((totalMinutes % 1440) + 1440) % 1440;
+  const hour24 = Math.floor(minutesInDay / 60);
+  const minute = minutesInDay % 60;
+  const suffix = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
 }
 
 async function deleteProofs(storage: DurableObjectStorage, submissions: StoredSubmission[]) {

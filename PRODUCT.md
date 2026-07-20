@@ -6,11 +6,13 @@ product
 
 ## Users
 
-Event players split into multiple groups for a scavenger-blackout game. They are likely moving between locations or stops, checking a shared game state quickly, and coordinating with teammates while time is limited. A host or organizer sets the structure of the hunt, while groups focus on completing every task on their blackout board.
+Event players can compete in teams or as individuals. They may be moving between locations, playing in one venue, checking a shared game state quickly, or coordinating while time is limited. A primary host chooses the game structure and can add co-hosts, while players focus on completing their own board.
 
 ## Product Purpose
 
-Scavenger Blackout gives each group a mobile-first website with a 5x5 blackout board of different tasks to complete during a multi-stop scavenger hunt. Groups view their board, tap a task when they complete it, and upload a photo as proof. The goal is to complete every space, not just a row. The website may show a countdown timer for the current stop and support repeated reconvening points where all groups meet before continuing.
+Scavenger Blackout is a reusable, mobile-first game platform. Hosts can run team or free-for-all games, choose 3x3, 4x4, or 5x5 boards, use bingo or blackout winning rules, give everyone the same board or varied boards, and decide whether photo proof is required, optional, or disabled. Timing can be untimed, a simple countdown, or a multi-stop schedule.
+
+New rooms open in setup instead of assuming a particular event. Presets cover a classic scheduled blackout, quick team bingo, and free-for-all play; custom setup exposes the same choices directly. Existing rooms are upgraded in place with their original teams, 5x5 blackout rules, proofs, and scheduled stops preserved.
 
 Success means players can understand what to do immediately, complete tasks without fiddling with the interface, and keep track of time, progress, and proof submissions while staying engaged with the real-world activity.
 
@@ -26,7 +28,7 @@ This should not look like a corporate dashboard, a casino or gambling app, or a 
 
 1. Keep the task card obvious: players should always know what to tap next, what is already submitted, and what still needs proof.
 2. Prioritize group momentum: photo upload, completion state, and timer visibility should be fast enough to use while moving around.
-3. Make progress visible at a glance: blackout status, completed tasks, and current-stop timing should not require interpretation.
+3. Make progress visible at a glance: bingo or blackout status, completed tasks, and the selected timing model should not require interpretation.
 4. Design for mixed ages: controls need to be large, familiar, and forgiving, with minimal helper text.
 5. Let the real-world game stay central: the UI should support the scavenger hunt, not compete with it.
 
@@ -43,3 +45,14 @@ bounded so the app can operate inside Cloudflare's free plan without a separate
 database or routinely maintained server. Proof photos are not a permanent
 archive and the product should say so wherever users might reasonably expect
 long-term storage.
+
+## Flexible Game Rules
+
+- Play: teams or individual free-for-all.
+- Winning: one complete bingo line or a full-board blackout.
+- Boards: 3x3, 4x4, or 5x5; shared or varied; optional center free space.
+- Proof: required, optional, or none; host review or automatic approval.
+- Timing: no timer, a duration countdown with pause/add-time controls, or scheduled stops.
+- Lobby: open or closed; manual team choice or balanced automatic assignment.
+- People: add, rename, recolor, reorder, and remove teams; move or kick players; promote co-hosts and transfer primary-host ownership.
+- Sharing: room code, direct player link, and join QR code.

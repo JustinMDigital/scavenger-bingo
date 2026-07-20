@@ -4,6 +4,13 @@ export const PROOFS_BUCKET = "proofs";
 export type SubmissionStatus = "pending" | "approved" | "retake";
 export type TaskStatus = "ready" | "pending" | "approved" | "retake";
 export type HuntPhase = "live" | "play" | "review";
+export type PlayMode = "teams" | "individual";
+export type WinCondition = "blackout" | "bingo";
+export type BoardMode = "shared" | "randomized";
+export type ProofMode = "required" | "optional" | "none";
+export type ApprovalMode = "host" | "automatic";
+export type TimerMode = "none" | "duration" | "schedule";
+export type BoardSize = 3 | 4 | 5;
 
 export type Group = {
   id: string;
@@ -48,6 +55,18 @@ export type Game = {
   timerStartedAt: string;
   timerSecondsTotal: number;
   boardHidden: boolean;
+  setupComplete: boolean;
+  playMode: PlayMode;
+  winCondition: WinCondition;
+  boardSize: BoardSize;
+  boardMode: BoardMode;
+  freeSpace: boolean;
+  proofMode: ProofMode;
+  approvalMode: ApprovalMode;
+  timerMode: TimerMode;
+  timerDurationMinutes: number;
+  lobbyOpen: boolean;
+  teamsLocked: boolean;
 };
 
 export type Membership = {
@@ -57,6 +76,7 @@ export type Membership = {
   role: "player" | "host";
   groupId: string | null;
   displayName: string;
+  isOwner?: boolean;
 };
 
 export type RosterMember = {
@@ -65,11 +85,12 @@ export type RosterMember = {
   role: "player" | "host";
   groupId: string | null;
   displayName: string;
+  isOwner?: boolean;
 };
 
 export type Submission = {
   id: string;
-  groupId: string;
+  groupId?: string;
   taskId: string;
   submittedBy: string;
   submittedByName: string | null;
@@ -121,7 +142,7 @@ export async function joinGame({
   displayName,
 }: {
   gameId: string;
-  groupId: string;
+  groupId?: string;
   displayName: string;
 }) {
   const code = requireCode(gameId);
@@ -177,6 +198,63 @@ export function addGroup({ gameId, name }: { gameId: string; name?: string }) {
   return action<Group>(requireCode(gameId), "addGroup", { gameId, name });
 }
 
+export function updateGroupDetails(
+  gameId: string,
+  groupId: string,
+  patch: Partial<Pick<Group, "name">> & { colorKey?: string; sortOrder?: number },
+) {
+  return action<Group>(requireCode(gameId), "updateGroup", { gameId, groupId, patch });
+}
+
+export function removeGroup(gameId: string, groupId: string) {
+  return action<void>(requireCode(gameId), "removeGroup", { gameId, groupId });
+}
+
+export function promotePlayerMembership(membershipId: string) {
+  return action<Membership>(requireCode(membershipId), "promotePlayer", { membershipId });
+}
+
+export function removeCohostMembership(membershipId: string) {
+  return action<Membership>(requireCode(membershipId), "removeCohost", { membershipId });
+}
+
+export function transferHostOwnership(membershipId: string) {
+  return action<Membership>(requireCode(membershipId), "transferHost", { membershipId });
+}
+
+export function configureGame({
+  gameId,
+  template,
+  startTime,
+  config,
+}: {
+  gameId: string;
+  template?: "classic" | "quick" | "free-for-all" | "custom";
+  startTime?: string;
+  config?: Partial<Pick<Game,
+    | "name"
+    | "playMode"
+    | "winCondition"
+    | "boardSize"
+    | "boardMode"
+    | "freeSpace"
+    | "proofMode"
+    | "approvalMode"
+    | "timerMode"
+    | "timerDurationMinutes"
+    | "lobbyOpen"
+    | "teamsLocked"
+    | "setupComplete"
+  >>;
+}) {
+  return action<Game>(requireCode(gameId), "configureGame", {
+    gameId,
+    template,
+    startTime,
+    config,
+  });
+}
+
 export async function saveTaskProof({
   gameId,
   groupId,
@@ -205,6 +283,19 @@ export async function saveTaskProof({
   );
   resourceCodeById.set(submission.id, code);
   return submission;
+}
+
+export function completeTask({
+  gameId,
+  taskId,
+}: {
+  gameId: string;
+  taskId: string;
+}) {
+  return action<Submission | { removed: true }>(requireCode(gameId), "completeTask", {
+    gameId,
+    taskId,
+  });
 }
 
 export function updateSubmissionStatus(
@@ -343,6 +434,10 @@ export function updateGameTimer(
     timerStartedAt: string;
     timerSecondsTotal: number;
     boardHidden: boolean;
+    name: string;
+    setupComplete: boolean;
+    lobbyOpen: boolean;
+    teamsLocked: boolean;
   }>,
 ) {
   return action<Game>(requireCode(gameId), "updateGame", { gameId, patch });

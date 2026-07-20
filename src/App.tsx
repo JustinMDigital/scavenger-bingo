@@ -75,6 +75,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { toCanvas } from "qrcode";
 import type React from "react";
 import {
   Fragment,
@@ -90,17 +91,24 @@ import {
   addStop as createStop,
   addTask as createTask,
   claimHost,
+  completeTask,
+  configureGame,
   createProofDownloadUrl,
   joinGame,
   kickPlayerMembership,
   loadGameState,
   movePlayerMembership,
+  promotePlayerMembership,
+  removeCohostMembership,
+  removeGroup as deleteGroup,
   removeStop as deleteStop,
   removeTask as deleteTask,
   resetGameProofs,
   saveTaskProof,
   setGroupBoardTasks,
   subscribeToGameChanges,
+  transferHostOwnership,
+  updateGroupDetails,
   updateGameTimer,
   updateStopDetails,
   updateTaskDetails,
@@ -114,6 +122,7 @@ import {
 } from "./pendingProofStore";
 import type {
   BoardAssignment,
+  BoardSize,
   Game,
   GameState,
   Group,
@@ -125,6 +134,7 @@ import type {
   SubmissionStatus,
   Task,
   TaskStatus,
+  TimerMode,
 } from "./gameService";
 import type { PendingProofUpload } from "./pendingProofStore";
 
@@ -157,7 +167,7 @@ type StoredPlayer = {
 
 type JoinRequest = {
   name: string;
-  groupId: string;
+  groupId?: string;
   gameCode: string;
 };
 
@@ -176,6 +186,10 @@ type LocalGamePatch = Partial<
     | "timerStartedAt"
     | "timerSecondsTotal"
     | "boardHidden"
+    | "name"
+    | "setupComplete"
+    | "lobbyOpen"
+    | "teamsLocked"
   >
 >;
 
@@ -187,8 +201,6 @@ const STORAGE_PLAYER_KEY = "scavenger-blackout-player";
 const STORAGE_GAME_CODE_KEY = "scavenger-blackout-game-code";
 const DEFAULT_PLAY_WINDOW_MINUTES = 30;
 const DEFAULT_STOP_WINDOW_MINUTES = 30;
-const BOARD_SLOT_COUNT = 25;
-const BOARD_CENTER_SLOT = 13;
 const DEFAULT_SHARED_BOARD_TASK_COUNT = 4;
 const MAX_PROOF_FILE_BYTES = 500 * 1024;
 const PROOF_MAX_FILE_LABEL = "500 KB";
@@ -438,9 +450,20 @@ export default function App() {
   const memberships = gameState?.memberships ?? [];
   const roster = gameState?.roster ?? [];
   const membership = gameState?.membership ?? null;
+  const scoreGroups = useMemo(
+    () =>
+      gameState?.game.playMode === "individual"
+        ? roster
+            .filter((member) => member.role === "player")
+            .map((member, index) => createPlayerGroup(member, index))
+        : groups,
+    [gameState?.game.playMode, groups, roster],
+  );
   const currentGroup =
     membership?.role === "player"
-      ? groups.find((group) => group.id === membership.groupId) ?? null
+      ? gameState?.game.playMode === "individual"
+        ? createPlayerGroup(membership, 0)
+        : groups.find((group) => group.id === membership.groupId) ?? null
       : null;
   const currentGroupTasks = useMemo(
     () =>
@@ -466,7 +489,9 @@ export default function App() {
   const selectedTask =
     currentGroupTasks.find((task) => task.id === selectedTaskId) ?? null;
   const activeStopIndex =
-    gameState?.game.phase === "play" && gameState.game.activeStopId === null
+    stops.length === 0
+      ? -1
+      : gameState?.game.phase === "play" && gameState.game.activeStopId === null
       ? -1
       : Math.max(
           0,
@@ -515,22 +540,7 @@ export default function App() {
         ...currentState,
         game: {
           ...currentState.game,
-          ...(patch.activeStopId !== undefined
-            ? { activeStopId: patch.activeStopId }
-            : {}),
-          ...(patch.phase !== undefined ? { phase: patch.phase } : {}),
-          ...(patch.timerRunning !== undefined
-            ? { timerRunning: patch.timerRunning }
-            : {}),
-          ...(patch.timerStartedAt !== undefined
-            ? { timerStartedAt: patch.timerStartedAt }
-            : {}),
-          ...(patch.timerSecondsTotal !== undefined
-            ? { timerSecondsTotal: patch.timerSecondsTotal }
-            : {}),
-          ...(patch.boardHidden !== undefined
-            ? { boardHidden: patch.boardHidden }
-            : {}),
+          ...patch,
         },
       };
     });
@@ -600,21 +610,25 @@ export default function App() {
         );
       }
 
-      const group =
-        loadedState.groups.find((item) => item.id === request.groupId) ??
-        loadedState.groups[0];
+      const group = loadedState.game.playMode === "teams"
+        ? loadedState.groups.find((item) => item.id === request.groupId) ??
+          loadedState.groups[0]
+        : null;
 
-      if (!group) {
+      if (loadedState.game.playMode === "teams" && !group) {
         throw new Error("This game does not have any groups yet.");
       }
 
-      await joinGame({
+      const joinedMembership = await joinGame({
         gameId: loadedState.game.id,
-        groupId: group.id,
+        groupId: group?.id,
         displayName: request.name,
       });
 
-      storePlayer({ name: request.name.trim(), groupId: group.id });
+      storePlayer({
+        name: request.name.trim(),
+        groupId: joinedMembership.groupId ?? joinedMembership.id,
+      });
       storeGameCode(loadedState.game.code);
       setGameCode(loadedState.game.code);
       await refreshGameState(loadedState.game.code, { silent: true });
@@ -926,6 +940,29 @@ export default function App() {
     }
   }
 
+  async function handleHostMembershipAction(
+    action: "promote" | "remove" | "transfer",
+    membershipId: string,
+  ) {
+    if (!gameState || membership?.role !== "host") return;
+    try {
+      if (action === "promote") await promotePlayerMembership(membershipId);
+      if (action === "remove") await removeCohostMembership(membershipId);
+      if (action === "transfer") await transferHostOwnership(membershipId);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast(
+        action === "promote"
+          ? "Co-host added"
+          : action === "transfer"
+            ? "Host ownership transferred"
+            : "Co-host removed",
+      );
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Host change failed");
+    }
+  }
+
   async function handleAddGroup(groupName: string) {
     if (!gameState || membership?.role !== "host") return false;
 
@@ -949,6 +986,88 @@ export default function App() {
     } finally {
       setIsAddingGroup(false);
     }
+  }
+
+  async function handleConfigureGame(
+    template?: "classic" | "quick" | "free-for-all" | "custom",
+    config?: Parameters<typeof configureGame>[0]["config"],
+    startTime?: string,
+  ) {
+    if (!gameState || membership?.role !== "host") return false;
+
+    setIsLoading(true);
+    try {
+      await configureGame({ gameId: gameState.game.id, template, config, startTime });
+      await refreshGameState(gameState.game.code, { silent: true });
+      setSelectedHostGroupId("");
+      setToast(template ? "Game style applied" : "Game settings saved");
+      return true;
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Settings could not be saved");
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleUpdateGroup(
+    groupId: string,
+    patch: Parameters<typeof updateGroupDetails>[2],
+  ) {
+    if (!gameState || membership?.role !== "host") return;
+    try {
+      await updateGroupDetails(gameState.game.id, groupId, patch);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Team updated");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Team update failed");
+    }
+  }
+
+  async function handleRemoveGroup(groupId: string) {
+    if (!gameState || membership?.role !== "host") return;
+    try {
+      await deleteGroup(gameState.game.id, groupId);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Team removed");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Team could not be removed");
+    }
+  }
+
+  async function handleCompleteTask(taskId: string) {
+    if (!gameState || membership?.role !== "player") return;
+    try {
+      await completeTask({ gameId: gameState.game.id, taskId });
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Board updated");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Task could not be updated");
+    }
+  }
+
+  async function handleStartGame() {
+    if (!gameState) return;
+    const timerStartedAt = new Date().toISOString();
+    await syncGameTimer(
+      {
+        setupComplete: true,
+        boardHidden: false,
+        phase: gameState.game.timerMode === "schedule" ? "play" : "live",
+        activeStopId: null,
+        timerRunning: gameState.game.timerMode !== "none",
+        timerStartedAt,
+        timerSecondsTotal:
+          gameState.game.timerMode === "duration"
+            ? gameState.game.timerDurationMinutes * 60
+            : gameState.game.timerSecondsTotal,
+      },
+      { successToast: "Game started", failureToast: "Game started locally" },
+    );
   }
 
   async function handleResetGameProofs() {
@@ -1177,7 +1296,7 @@ export default function App() {
       return;
     }
 
-    const cleanedTaskIds = taskIds.slice(0, BOARD_SLOT_COUNT);
+    const cleanedTaskIds = taskIds.slice(0, getBoardSlotCount(gameState.game.boardSize));
     const assignedTaskIds = cleanedTaskIds.filter(Boolean);
     const uniqueTaskIds = new Set(assignedTaskIds);
 
@@ -1209,7 +1328,13 @@ export default function App() {
     }
 
     try {
-      const generatedBoards = generateGroupBoards(groups, tasks);
+      const generatedBoards = generateGroupBoards(
+        groups,
+        tasks,
+        gameState.game.boardSize,
+        gameState.game.freeSpace,
+        gameState.game.boardMode,
+      );
 
       for (const group of groups) {
         await setGroupBoardTasks({
@@ -1229,6 +1354,14 @@ export default function App() {
 
   async function handleAddFiveMinutes() {
     if (!gameState) return;
+
+    if (gameState.game.timerMode === "duration") {
+      await syncGameTimer(
+        { timerSecondsTotal: gameState.game.timerSecondsTotal + 300 },
+        { successToast: "Added 5 minutes", failureToast: "Added 5 minutes locally" },
+      );
+      return;
+    }
 
     const targetStop =
       gameState.game.phase === "play"
@@ -1266,6 +1399,19 @@ export default function App() {
       );
       setToast("Added 5 minutes locally");
     }
+  }
+
+  async function handleToggleDurationTimer() {
+    if (!gameState || gameState.game.timerMode !== "duration") return;
+    await syncGameTimer(
+      gameState.game.timerRunning
+        ? { timerRunning: false, timerSecondsTotal: timerSeconds }
+        : { timerRunning: true, timerStartedAt: new Date().toISOString() },
+      {
+        successToast: gameState.game.timerRunning ? "Timer paused" : "Timer resumed",
+        failureToast: "Timer changed locally",
+      },
+    );
   }
 
   async function handlePlayTime(afterStopIndex: number) {
@@ -1384,16 +1530,22 @@ export default function App() {
     );
   }
 
-  if (!activeStop) {
-    return (
-      <ErrorView
-        error={error || "Game could not be loaded."}
-        onRetry={() => void refreshGameState(gameCode)}
-      />
-    );
-  }
-
-  const routeDisplay = getRouteDisplay(stops, activeStopIndex, gameState.game.phase);
+  const routeDisplay = gameState.game.timerMode === "schedule"
+    ? getRouteDisplay(stops, activeStopIndex, gameState.game.phase)
+    : {
+        label: gameState.game.phase === "review" ? "Game finished" : "Current game",
+        title: gameState.game.name,
+        detail:
+          gameState.game.timerMode === "duration"
+            ? `${gameState.game.timerDurationMinutes}-minute ${gameState.game.winCondition} game.`
+            : "Untimed game. The host decides when play ends.",
+        timeLabel:
+          gameState.game.timerMode === "duration"
+            ? `${gameState.game.timerDurationMinutes} minute countdown`
+            : "No timer",
+        timerSmall:
+          gameState.game.timerMode === "duration" ? "remaining" : "no timer",
+      };
   const timerDisplay = getTimerDisplay(
     gameState.game,
     stops,
@@ -1455,18 +1607,26 @@ export default function App() {
               addTask={handleAddTask}
               abandonGame={handleAbandonGame}
               boardAssignments={boardAssignments}
+              configure={handleConfigureGame}
               expandedStopId={expandedStopId}
               generateBoards={handleGenerateBoards}
               game={gameState.game}
+              expiresAt={gameState.expiresAt}
               goToPlayTime={handlePlayTime}
               goToNextStop={handleNextStop}
               groups={groups}
+              scoreGroups={scoreGroups}
+              hostMembership={membership}
               isAddingGroup={isAddingGroup}
               kickingMembershipId={kickingMembershipId}
               kickPlayer={handleKickPlayerMembership}
               memberships={memberships}
               movingMembershipId={movingMembershipId}
               movePlayer={handleMovePlayerMembership}
+              promotePlayer={(id) => handleHostMembershipAction("promote", id)}
+              removeCohost={(id) => handleHostMembershipAction("remove", id)}
+              transferHost={(id) => handleHostMembershipAction("transfer", id)}
+              removeGroup={handleRemoveGroup}
               removeTask={handleRemoveTask}
               removeStop={handleRemoveStop}
               saveGroupBoard={handleSaveGroupBoard}
@@ -1477,12 +1637,16 @@ export default function App() {
               setSelectedHostGroupId={setSelectedHostGroupId}
               setSubmissionStatus={handleSubmissionStatus}
               setBoardHidden={handleSetBoardHidden}
+              startGame={handleStartGame}
               stops={stops}
               submissions={submissions}
               tasks={tasks}
               timerDisplay={timerDisplay}
+              toggleDurationTimer={handleToggleDurationTimer}
               routeDisplay={routeDisplay}
               updateStop={handleUpdateStop}
+              updateGroup={handleUpdateGroup}
+              updateRoom={(patch) => void syncGameTimer(patch, { successToast: "Room updated" })}
               updateTask={handleUpdateTask}
             />
           ) : (
@@ -1504,11 +1668,13 @@ export default function App() {
             group={currentGroup}
             groups={groups}
             isBoardHidden={gameState.game.boardHidden}
+            game={gameState.game}
             isTaskCardDismissed={isTaskCardDismissed}
             onDismissTaskCard={() => setIsTaskCardDismissed(true)}
             onBoardViewChange={setBoardView}
             onRetryPendingProof={handleRetryPendingProof}
             onSubmitProof={handleSubmitProof}
+            onCompleteTask={handleCompleteTask}
             onTaskSelect={handleTaskSelect}
             pendingProofs={currentPendingProofs}
             roster={roster}
@@ -1524,6 +1690,7 @@ export default function App() {
             defaultGroupId={storedPlayer?.groupId ?? groups[0]?.id ?? ""}
             defaultName={storedPlayer?.name ?? ""}
             groups={groups}
+            game={gameState.game}
             isBusy={isLoading}
             onJoin={handleJoin}
           />
@@ -1962,6 +2129,7 @@ function JoinView({
   defaultGroupId,
   defaultName,
   groups,
+  game,
   isBusy,
   onJoin,
 }: {
@@ -1969,13 +2137,16 @@ function JoinView({
   defaultGroupId: string;
   defaultName: string;
   groups: Group[];
+  game: Game;
   isBusy: boolean;
   onJoin: (request: JoinRequest) => void;
 }) {
   const [name, setName] = useState(defaultName);
   const [gameCode, setGameCode] = useState(defaultGameCode);
   const [groupId, setGroupId] = useState(defaultGroupId || groups[0]?.id || "");
-  const hasGroups = groups.length > 0;
+  const isIndividual = game.playMode === "individual";
+  const isAutoAssign = !isIndividual && game.teamsLocked;
+  const hasGroups = isIndividual || groups.length > 0;
   const selectedGroup = groups.find((group) => group.id === groupId) ?? groups[0];
 
   useEffect(() => {
@@ -1989,11 +2160,11 @@ function JoinView({
     const cleanName = name.trim();
     const cleanGameCode = gameCode.trim();
 
-    if (!cleanName || !groupId || !cleanGameCode || !hasGroups) {
+    if (!cleanName || (!isIndividual && !isAutoAssign && !groupId) || !cleanGameCode || !hasGroups) {
       return;
     }
 
-    onJoin({ name: cleanName, groupId, gameCode: cleanGameCode });
+    onJoin({ name: cleanName, groupId: isIndividual || isAutoAssign ? undefined : groupId, gameCode: cleanGameCode });
   }
 
   function chooseRandomGroup() {
@@ -2014,26 +2185,28 @@ function JoinView({
   return (
     <section className="welcome-card" aria-labelledby="join-title">
       <div>
-        <p className="label">Group hunt</p>
-        <h2 id="join-title">Join your group, then start filling the board.</h2>
+        <p className="label">{isIndividual ? "Free-for-all" : "Team game"}</p>
+        <h2 id="join-title">
+          {isIndividual ? "Join and get your own board." : "Join your team, then start filling the board."}
+        </h2>
         <p>
-          Your next screen shows the blackout card and one current task. Send
-          photos from the bottom card as you go.
+          Your next screen shows your {game.boardSize} by {game.boardSize} card.
+          {game.proofMode === "required" ? " Send photo proof as you go." : " Complete squares as you go."}
         </p>
       </div>
 
-      <div className="join-steps" aria-label="How the hunt works">
+      <div className="join-steps" aria-label="How the game works">
         <span>
           <Grid3X3 aria-hidden="true" />
           Pick a ready square
         </span>
         <span>
           <Camera aria-hidden="true" />
-          Send photo proof
+          {game.proofMode === "required" ? "Send photo proof" : "Complete the task"}
         </span>
         <span>
           <Check aria-hidden="true" />
-          Keep going to blackout
+          {game.winCondition === "bingo" ? "Complete a bingo line" : "Fill every square"}
         </span>
       </div>
 
@@ -2060,7 +2233,7 @@ function JoinView({
           />
         </label>
 
-        <fieldset className="group-field">
+        {!isIndividual && !isAutoAssign && <fieldset className="group-field">
           <legend className="visually-hidden">Group</legend>
           <div className="group-field-header">
             <span>Group</span>
@@ -2099,11 +2272,28 @@ function JoinView({
               </div>
             </div>
           )}
-        </fieldset>
+        </fieldset>}
+
+        {isIndividual && (
+          <div className="join-empty" role="status">
+            <Grid3X3 aria-hidden="true" />
+            <div>
+              <strong>Your own randomized board</strong>
+              <p>Your score is tracked separately from every other player.</p>
+            </div>
+          </div>
+        )}
+
+        {isAutoAssign && (
+          <div className="join-empty" role="status">
+            <Users aria-hidden="true" />
+            <div><strong>Teams are balanced automatically</strong><p>The game will place you on the team with the fewest players.</p></div>
+          </div>
+        )}
 
         <button
           className="join-submit"
-          disabled={!name.trim() || !groupId || !gameCode.trim() || !hasGroups || isBusy}
+          disabled={!name.trim() || (!isIndividual && !isAutoAssign && !groupId) || !gameCode.trim() || !hasGroups || isBusy || !game.lobbyOpen}
           style={
             {
               "--primary": selectedGroup?.color,
@@ -2112,7 +2302,13 @@ function JoinView({
           }
           type="submit"
         >
-          {isBusy ? "Joining..." : hasGroups ? "Open board" : "Waiting for groups"}
+          {isBusy
+            ? "Joining..."
+            : !game.lobbyOpen
+              ? "Lobby closed"
+              : hasGroups
+                ? "Open board"
+                : "Waiting for teams"}
         </button>
       </form>
     </section>
@@ -2206,6 +2402,7 @@ function HostGate({
 function GroupView({
   boardView,
   group,
+  game,
   groups,
   isBoardHidden,
   isTaskCardDismissed,
@@ -2213,6 +2410,7 @@ function GroupView({
   onBoardViewChange,
   onRetryPendingProof,
   onSubmitProof,
+  onCompleteTask,
   onTaskSelect,
   pendingProofs,
   roster,
@@ -2224,6 +2422,7 @@ function GroupView({
 }: {
   boardView: BoardView;
   group: Group;
+  game: Game;
   groups: Group[];
   isBoardHidden: boolean;
   isTaskCardDismissed: boolean;
@@ -2231,6 +2430,7 @@ function GroupView({
   onBoardViewChange: (view: BoardView) => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
+  onCompleteTask: (taskId: string) => void;
   onTaskSelect: (taskId: string) => void;
   pendingProofs: PendingProofUpload[];
   roster: RosterMember[];
@@ -2259,16 +2459,18 @@ function GroupView({
     () => new Set(pendingProofs.map((proof) => proof.taskId)),
     [pendingProofs],
   );
-  const isBlackout = hasTasks && approvedCount === tasks.length;
+  const hasWon = hasTasks && (game.winCondition === "blackout"
+    ? approvedCount === tasks.length
+    : hasCompletedBingo(tasks, group.id, submissions, game.boardSize));
 
   return (
     <div className="view-stack group-view">
-      {!isBoardHidden && isBlackout && (
+      {!isBoardHidden && hasWon && (
         <section className="blackout-banner">
           <Check aria-hidden="true" />
           <div>
-            <strong>Blackout complete</strong>
-            <span>Every square has been approved.</span>
+            <strong>{game.winCondition === "bingo" ? "Bingo complete" : "Blackout complete"}</strong>
+            <span>{game.winCondition === "bingo" ? "You completed a full line." : "Every square has been approved."}</span>
           </div>
         </section>
       )}
@@ -2284,12 +2486,12 @@ function GroupView({
       )}
 
       {isBoardHidden ? (
-        <BoardHiddenRoster groups={groups} roster={roster} />
+        <BoardHiddenRoster groups={groups} playMode={game.playMode} roster={roster} />
       ) : (
         <section aria-labelledby="board-heading">
           <div className="section-heading">
             <div>
-              <p className="label">Blackout card</p>
+              <p className="label">{game.winCondition === "bingo" ? "Bingo card" : "Blackout card"}</p>
               <h2 id="board-heading">
                 {hasTasks
                   ? `${completedCount} of ${tasks.length} sent`
@@ -2328,6 +2530,7 @@ function GroupView({
 
               {boardView === "grid" ? (
                 <TaskBoard
+                  boardSize={game.boardSize}
                   groupId={group.id}
                   onTaskSelect={onTaskSelect}
                   pendingProofTaskIds={pendingProofTaskIds}
@@ -2365,11 +2568,13 @@ function GroupView({
           onDismiss={onDismissTaskCard}
           onRetryPendingProof={onRetryPendingProof}
           onSubmitProof={onSubmitProof}
+          onCompleteTask={onCompleteTask}
           pendingProof={pendingProofsByTask.get(selectedTask.id)}
           submission={groupSubmissions.find(
             (submission) => submission.taskId === selectedTask.id,
           )}
           task={selectedTask}
+          proofMode={game.proofMode}
         />
       )}
     </div>
@@ -2378,15 +2583,23 @@ function GroupView({
 
 function BoardHiddenRoster({
   groups,
+  playMode,
   roster,
 }: {
   groups: Group[];
+  playMode: Game["playMode"];
   roster: RosterMember[];
 }) {
+  const visibleGroups = useMemo(
+    () => playMode === "individual"
+      ? roster.filter((member) => member.role === "player").map((member, index) => createPlayerGroup(member, index))
+      : groups,
+    [groups, playMode, roster],
+  );
   const playersByGroup = useMemo(() => {
     const groupedRoster = new Map<string, RosterMember[]>();
 
-    groups.forEach((group) => {
+    visibleGroups.forEach((group) => {
       groupedRoster.set(group.id, []);
     });
 
@@ -2399,7 +2612,7 @@ function BoardHiddenRoster({
     });
 
     return groupedRoster;
-  }, [groups, roster]);
+  }, [roster, visibleGroups]);
   const playerCount = roster.filter((member) => member.role === "player").length;
 
   return (
@@ -2407,7 +2620,7 @@ function BoardHiddenRoster({
       <div className="board-hidden-header">
         <Lock aria-hidden="true" />
         <div>
-          <p className="label">Teams waiting</p>
+          <p className="label">{playMode === "individual" ? "Players waiting" : "Teams waiting"}</p>
           <h2 id="board-hidden-title">Waiting for the host</h2>
           <p>
             {playerCount === 1
@@ -2418,7 +2631,7 @@ function BoardHiddenRoster({
       </div>
 
       <div className="waiting-team-list">
-        {groups.map((group) => {
+        {visibleGroups.map((group) => {
           const players = playersByGroup.get(group.id) ?? [];
 
           return (
@@ -2503,18 +2716,26 @@ function HostView({
   addTask,
   abandonGame,
   boardAssignments,
+  configure,
   expandedStopId,
   generateBoards,
   game,
+  expiresAt,
   goToPlayTime,
   goToNextStop,
   groups,
+  scoreGroups,
+  hostMembership,
   isAddingGroup,
   kickingMembershipId,
   kickPlayer,
   memberships,
   movingMembershipId,
   movePlayer,
+  promotePlayer,
+  removeCohost,
+  transferHost,
+  removeGroup,
   removeTask,
   removeStop,
   resetGameProofs,
@@ -2522,6 +2743,7 @@ function HostView({
   selectedHostGroupId,
   setExpandedStopId,
   setBoardHidden,
+  startGame,
   setHuntPhase,
   setSelectedHostGroupId,
   setSubmissionStatus,
@@ -2529,8 +2751,11 @@ function HostView({
   submissions,
   tasks,
   timerDisplay,
+  toggleDurationTimer,
   routeDisplay,
   updateStop,
+  updateGroup,
+  updateRoom,
   updateTask,
 }: {
   activeStopIndex: number;
@@ -2540,18 +2765,30 @@ function HostView({
   addTask: () => void;
   abandonGame: () => void;
   boardAssignments: BoardAssignment[];
+  configure: (
+    template?: "classic" | "quick" | "free-for-all" | "custom",
+    config?: Parameters<typeof configureGame>[0]["config"],
+    startTime?: string,
+  ) => Promise<boolean>;
   expandedStopId: string;
   generateBoards: () => void;
   game: Game;
+  expiresAt?: number;
   goToPlayTime: (afterStopIndex: number) => void;
   goToNextStop: () => void;
   groups: Group[];
+  scoreGroups: Group[];
+  hostMembership: Membership;
   isAddingGroup: boolean;
   kickingMembershipId: string;
   kickPlayer: (membershipId: string) => void;
   memberships: Membership[];
   movingMembershipId: string;
   movePlayer: (membershipId: string, groupId: string) => void;
+  promotePlayer: (membershipId: string) => void;
+  removeCohost: (membershipId: string) => void;
+  transferHost: (membershipId: string) => void;
+  removeGroup: (groupId: string) => void;
   removeTask: (taskId: string) => void;
   removeStop: (stopId: string) => void;
   resetGameProofs: () => void;
@@ -2559,6 +2796,7 @@ function HostView({
   selectedHostGroupId: string;
   setExpandedStopId: (stopId: string) => void;
   setBoardHidden: (boardHidden: boolean) => void;
+  startGame: () => void;
   setHuntPhase: (phase: HuntPhase) => void;
   setSelectedHostGroupId: (groupId: string) => void;
   setSubmissionStatus: (submissionId: string, status: Submission["status"]) => void;
@@ -2566,11 +2804,17 @@ function HostView({
   submissions: Submission[];
   tasks: Task[];
   timerDisplay: TimerDisplay;
+  toggleDurationTimer: () => void;
   routeDisplay: RouteDisplay;
   updateStop: (
     stopId: string,
     patch: Partial<Pick<HuntStop, "name" | "detail" | "arriveTime" | "leaveTime">>,
   ) => void;
+  updateGroup: (
+    groupId: string,
+    patch: Parameters<typeof updateGroupDetails>[2],
+  ) => void;
+  updateRoom: (patch: LocalGamePatch) => void;
   updateTask: (
     taskId: string,
     patch: Partial<Pick<Task, "title" | "description" | "icon" | "free">>,
@@ -2581,36 +2825,45 @@ function HostView({
     (submission) => submission.status === "pending",
   ).length;
   const selectedGroup =
-    groups.find((group) => group.id === selectedHostGroupId) ?? null;
+    scoreGroups.find((group) => group.id === selectedHostGroupId) ?? null;
   const boardsLocked = submissions.length > 0;
-  const isHuntActive =
-    game.phase !== "live" || activeStopIndex >= 0 || game.timerRunning;
   const [hostArea, setHostArea] = useState<"setup" | "run" | "manage">(
-    isHuntActive ? "run" : "setup",
+    game.setupComplete ? "run" : "setup",
   );
-  const [setupStep, setSetupStep] = useState<"teams" | "boards" | "route">(
-    "teams",
+  const [setupStep, setSetupStep] = useState<"game" | "teams" | "boards" | "route">(
+    "game",
   );
+  const boardSlotCount = getBoardSlotCount(game.boardSize);
+  const boardOwners = game.playMode === "teams" ? groups : scoreGroups;
   const boardsReady =
-    tasks.length >= BOARD_SLOT_COUNT &&
-    groups.every(
+    (game.playMode === "individual" || boardOwners.length > 0) &&
+    tasks.length >= boardSlotCount &&
+    boardOwners.every(
       (group) =>
         getGroupBoardTasks(group.id, tasks, boardAssignments).length ===
-        BOARD_SLOT_COUNT,
+        boardSlotCount,
     );
 
   useEffect(() => {
-    if (isHuntActive) {
+    if (game.setupComplete) {
       setHostArea("run");
     }
-  }, [isHuntActive]);
+  }, [game.setupComplete]);
 
   const setupSteps = [
     {
+      id: "game" as const,
+      label: "Game",
+      detail: `${game.playMode === "individual" ? "Free-for-all" : "Teams"} · ${game.winCondition === "bingo" ? "Bingo" : "Blackout"}`,
+      complete: true,
+    },
+    {
       id: "teams" as const,
-      label: "Teams",
-      detail: groups.length === 1 ? "1 team ready" : `${groups.length} teams ready`,
-      complete: groups.length > 0,
+      label: game.playMode === "individual" ? "Players" : "Teams",
+      detail: game.playMode === "individual"
+        ? scoreGroups.length === 1 ? "1 player joined" : `${scoreGroups.length} players joined`
+        : groups.length === 1 ? "1 team ready" : `${groups.length} teams ready`,
+      complete: game.playMode === "individual" || groups.length > 0,
     },
     {
       id: "boards" as const,
@@ -2620,9 +2873,13 @@ function HostView({
     },
     {
       id: "route" as const,
-      label: "Route",
-      detail: stops.length === 1 ? "1 stop planned" : `${stops.length} stops planned`,
-      complete: stops.length > 0,
+      label: game.timerMode === "schedule" ? "Route" : "Timing",
+      detail: game.timerMode === "none"
+        ? "No timer"
+        : game.timerMode === "duration"
+          ? `${game.timerDurationMinutes} minutes`
+          : stops.length === 1 ? "1 stop planned" : `${stops.length} stops planned`,
+      complete: game.timerMode !== "schedule" || stops.length > 0,
     },
   ];
 
@@ -2661,7 +2918,7 @@ function HostView({
             <div>
               <p className="label">Before players begin</p>
               <h2 id="setup-heading">Build the hunt one step at a time.</h2>
-              <p>Set the teams, make the boards, then plan the route.</p>
+              <p>Choose how people play, prepare the boards, then set the timing.</p>
             </div>
             <ol className="host-setup-steps">
               {setupSteps.map((step, index) => (
@@ -2688,11 +2945,20 @@ function HostView({
             </ol>
           </section>
 
+          {setupStep === "game" && (
+            <GameSettingsPanel
+              game={game}
+              boardsLocked={boardsLocked}
+              onConfigure={configure}
+              onNext={() => setSetupStep(game.playMode === "teams" ? "teams" : "boards")}
+            />
+          )}
+
           {setupStep === "teams" && (
             <section className="host-step-panel" aria-labelledby="setup-teams-heading">
               <div className="host-step-heading">
                 <div>
-                  <p className="label">Step 1</p>
+                  <p className="label">Step 2</p>
                   <h2 id="setup-teams-heading">Name your teams</h2>
                   <p>Add or rename teams now. Players will choose from this list.</p>
                 </div>
@@ -2707,6 +2973,13 @@ function HostView({
                 movingMembershipId={movingMembershipId}
                 onKickPlayer={kickPlayer}
                 onMovePlayer={movePlayer}
+                onPromotePlayer={promotePlayer}
+                onRemoveCohost={removeCohost}
+                onTransferHost={transferHost}
+                onRemoveGroup={removeGroup}
+                onUpdateGroup={updateGroup}
+                currentHost={hostMembership}
+                playMode={game.playMode}
                 showHeading={false}
                 submissions={submissions}
               />
@@ -2726,7 +2999,7 @@ function HostView({
             <section className="host-step-panel" aria-labelledby="setup-boards-heading">
               <div className="host-step-heading">
                 <div>
-                  <p className="label">Step 2</p>
+                  <p className="label">Step 3</p>
                   <h2 id="setup-boards-heading">Make the boards</h2>
                   <p>Adjust the task pool, then generate or fine-tune each team board.</p>
                 </div>
@@ -2734,8 +3007,9 @@ function HostView({
               </div>
               <BoardEditor
                 boardAssignments={boardAssignments}
+                boardSize={game.boardSize}
                 boardsLocked={boardsLocked}
-                groups={groups}
+                groups={boardOwners}
                 onAddTask={addTask}
                 onGenerateBoards={generateBoards}
                 onRemoveTask={removeTask}
@@ -2750,7 +3024,7 @@ function HostView({
                 <button
                   className="secondary-action"
                   type="button"
-                  onClick={() => setSetupStep("teams")}
+                  onClick={() => setSetupStep(game.playMode === "teams" ? "teams" : "game")}
                 >
                   Back
                 </button>
@@ -2769,13 +3043,21 @@ function HostView({
             <section className="host-step-panel" aria-labelledby="setup-route-heading">
               <div className="host-step-heading">
                 <div>
-                  <p className="label">Step 3</p>
-                  <h2 id="setup-route-heading">Plan the route</h2>
-                  <p>Set each stop and its timing. You can still edit this later.</p>
+                  <p className="label">Step 4</p>
+                  <h2 id="setup-route-heading">
+                    {game.timerMode === "schedule" ? "Plan the route" : "Ready to start"}
+                  </h2>
+                  <p>
+                    {game.timerMode === "schedule"
+                      ? "Set each stop and its timing. You can still edit this later."
+                      : game.timerMode === "duration"
+                        ? `The game will run for ${game.timerDurationMinutes} minutes.`
+                        : "This game has no countdown. The host decides when it ends."}
+                  </p>
                 </div>
                 <span>{stops.length === 1 ? "1 stop" : `${stops.length} stops`}</span>
               </div>
-              <div className="stop-editor-list">
+              {game.timerMode === "schedule" && <div className="stop-editor-list">
                 {stops.map((stop, index) => (
                   <Fragment key={stop.id}>
                     <StopEditor
@@ -2794,11 +3076,11 @@ function HostView({
                     />
                   </Fragment>
                 ))}
-              </div>
-              <button className="add-stop-button" type="button" onClick={addStop}>
+              </div>}
+              {game.timerMode === "schedule" && <button className="add-stop-button" type="button" onClick={addStop}>
                 <Plus aria-hidden="true" />
                 Add stop
-              </button>
+              </button>}
               <div className="host-step-actions">
                 <button
                   className="secondary-action"
@@ -2810,7 +3092,8 @@ function HostView({
                 <button
                   className="primary-action"
                   type="button"
-                  onClick={() => goToPlayTime(-1)}
+                  disabled={!boardsReady || (game.playMode === "teams" && groups.length === 0) || (game.timerMode === "schedule" && stops.length === 0)}
+                  onClick={startGame}
                 >
                   <Play aria-hidden="true" />
                   Start the hunt
@@ -2846,12 +3129,12 @@ function HostView({
                 <button
                   className="primary-action"
                   type="button"
-                  onClick={() => setHuntPhase("live")}
+                  onClick={startGame}
                 >
                   <Play aria-hidden="true" />
-                  Return to schedule
+                  Resume game
                 </button>
-              ) : (
+              ) : game.timerMode === "schedule" ? (
                 <button
                   className="primary-action"
                   disabled={activeStopIndex >= stops.length - 1}
@@ -2873,11 +3156,17 @@ function HostView({
                       ? "Start next stop"
                       : "Start play time"}
                 </button>
-              )}
-              {game.phase !== "review" && (
+              ) : null}
+              {game.phase !== "review" && game.timerMode !== "none" && (
                 <button className="control-button" type="button" onClick={addFiveMinutes}>
                   <Clock aria-hidden="true" />
                   Add 5 min
+                </button>
+              )}
+              {game.phase !== "review" && game.timerMode === "duration" && (
+                <button className="control-button" type="button" onClick={toggleDurationTimer}>
+                  {game.timerRunning ? <Clock aria-hidden="true" /> : <Play aria-hidden="true" />}
+                  {game.timerRunning ? "Pause timer" : "Resume timer"}
                 </button>
               )}
               <button
@@ -2911,7 +3200,7 @@ function HostView({
               <span>{pendingCount} pending</span>
             </div>
             <div className="team-cards">
-              {groups.map((group) => (
+              {scoreGroups.map((group) => (
                 <TeamCard
                   key={group.id}
                   group={group}
@@ -2926,6 +3215,7 @@ function HostView({
 
           {selectedGroup && (
             <HostLiveBoard
+              boardSize={game.boardSize}
               group={selectedGroup}
               onClose={() => setSelectedHostGroupId("")}
               setSubmissionStatus={setSubmissionStatus}
@@ -2943,7 +3233,7 @@ function HostView({
               <span>{game.phase === "review" ? "Review mode" : "Newest first"}</span>
             </div>
             <ProofList
-              groups={groups}
+              groups={scoreGroups}
               huntPhase={game.phase}
               setSubmissionStatus={setSubmissionStatus}
               submissions={submissions}
@@ -2960,6 +3250,33 @@ function HostView({
             <h2 id="manage-heading">Edit or reset the hunt</h2>
             <p>Return to any setup step to adjust the teams, boards, or route.</p>
           </div>
+          <div className="room-management-grid">
+            <PlayerInviteCard gameCode={game.code} />
+            <div className="room-management-card">
+              <p className="label">Lobby</p>
+              <label className="task-free-toggle"><input checked={game.lobbyOpen} type="checkbox" onChange={(event) => updateRoom({ lobbyOpen: event.target.checked })} />Allow new players to join</label>
+              {game.playMode === "teams" && <label className="task-free-toggle"><input checked={game.teamsLocked} type="checkbox" onChange={(event) => updateRoom({ teamsLocked: event.target.checked })} />Assign new players to balanced teams</label>}
+              {expiresAt && <small>Room expires {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(expiresAt))}</small>}
+            </div>
+          </div>
+          <TeamManagementPanel
+            currentHost={hostMembership}
+            groups={groups}
+            isAddingGroup={isAddingGroup}
+            kickingMembershipId={kickingMembershipId}
+            memberships={memberships}
+            movingMembershipId={movingMembershipId}
+            onAddGroup={addGroup}
+            onKickPlayer={kickPlayer}
+            onMovePlayer={movePlayer}
+            onPromotePlayer={promotePlayer}
+            onRemoveCohost={removeCohost}
+            onRemoveGroup={removeGroup}
+            onTransferHost={transferHost}
+            onUpdateGroup={updateGroup}
+            playMode={game.playMode}
+            submissions={submissions}
+          />
           <div className="host-manage-links">
             {setupSteps.map((step) => (
               <button
@@ -2988,6 +3305,8 @@ function HostView({
               </button>
               <button
                 className="control-button danger is-critical"
+                disabled={!hostMembership.isOwner}
+                title={hostMembership.isOwner ? undefined : "Only the primary host can abandon the room"}
                 type="button"
                 onClick={abandonGame}
               >
@@ -3002,6 +3321,139 @@ function HostView({
   );
 }
 
+function PlayerInviteCard({ gameCode }: { gameCode: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const playerUrl = `${window.location.origin}/?code=${encodeURIComponent(gameCode)}`;
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    void toCanvas(canvasRef.current, playerUrl, {
+      width: 148,
+      margin: 1,
+      color: { dark: "#15171c", light: "#ffffff" },
+    });
+  }, [playerUrl]);
+
+  return (
+    <div className="room-management-card invite-card">
+      <div>
+        <p className="label">Invite players</p>
+        <strong>Room {gameCode}</strong>
+        <span>{playerUrl}</span>
+        <button className="secondary-action" type="button" onClick={() => void navigator.clipboard.writeText(playerUrl)}>Copy player link</button>
+      </div>
+      <canvas ref={canvasRef} aria-label={`QR code to join room ${gameCode}`} />
+    </div>
+  );
+}
+
+function GameSettingsPanel({
+  game,
+  boardsLocked,
+  onConfigure,
+  onNext,
+}: {
+  game: Game;
+  boardsLocked: boolean;
+  onConfigure: (
+    template?: "classic" | "quick" | "free-for-all" | "custom",
+    config?: Parameters<typeof configureGame>[0]["config"],
+    startTime?: string,
+  ) => Promise<boolean>;
+  onNext: () => void;
+}) {
+  const [draft, setDraft] = useState({
+    name: game.name,
+    playMode: game.playMode,
+    winCondition: game.winCondition,
+    boardSize: game.boardSize,
+    boardMode: game.boardMode,
+    freeSpace: game.freeSpace,
+    proofMode: game.proofMode,
+    approvalMode: game.approvalMode,
+    timerMode: game.timerMode,
+    timerDurationMinutes: game.timerDurationMinutes,
+  });
+  const [startTime, setStartTime] = useState("10:00 AM");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft({
+      name: game.name,
+      playMode: game.playMode,
+      winCondition: game.winCondition,
+      boardSize: game.boardSize,
+      boardMode: game.boardMode,
+      freeSpace: game.freeSpace,
+      proofMode: game.proofMode,
+      approvalMode: game.approvalMode,
+      timerMode: game.timerMode,
+      timerDurationMinutes: game.timerDurationMinutes,
+    });
+  }, [game]);
+
+  async function applyTemplate(template: "classic" | "quick" | "free-for-all" | "custom") {
+    setIsSaving(true);
+    await onConfigure(template, undefined, template === "classic" ? startTime : undefined);
+    setIsSaving(false);
+  }
+
+  async function saveCustom() {
+    setIsSaving(true);
+    const saved = await onConfigure(undefined, draft);
+    setIsSaving(false);
+    if (saved) onNext();
+  }
+
+  return (
+    <section className="host-step-panel game-settings-panel" aria-labelledby="setup-game-heading">
+      <div className="host-step-heading">
+        <div>
+          <p className="label">Step 1</p>
+          <h2 id="setup-game-heading">Choose how this game works</h2>
+          <p>Start with a preset or adjust every option below.</p>
+        </div>
+        <span>{boardsLocked ? "Format locked" : "Flexible setup"}</span>
+      </div>
+
+      <div className="game-template-grid">
+        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("classic")}>
+          <strong>Classic event</strong><span>3 teams · 5×5 blackout · scheduled stops</span>
+        </button>
+        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("quick")}>
+          <strong>Quick bingo</strong><span>2 teams · 3×3 bingo · 30 minutes</span>
+        </button>
+        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("free-for-all")}>
+          <strong>Free-for-all</strong><span>Personal 4×4 boards · 45 minutes</span>
+        </button>
+        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("custom")}>
+          <strong>Blank custom game</strong><span>Choose teams, board, proof, and timing</span>
+        </button>
+      </div>
+
+      <div className="game-settings-grid">
+        <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        <label className="field"><span>Players</span><select value={draft.playMode} onChange={(event) => setDraft({ ...draft, playMode: event.target.value as Game["playMode"] })}><option value="teams">Teams</option><option value="individual">Free-for-all</option></select></label>
+        <label className="field"><span>Winning</span><select value={draft.winCondition} onChange={(event) => setDraft({ ...draft, winCondition: event.target.value as Game["winCondition"] })}><option value="blackout">Blackout — every square</option><option value="bingo">Bingo — one full line</option></select></label>
+        <label className="field"><span>Board size</span><select value={draft.boardSize} onChange={(event) => setDraft({ ...draft, boardSize: Number(event.target.value) as BoardSize })}><option value={3}>3 × 3</option><option value={4}>4 × 4</option><option value={5}>5 × 5</option></select></label>
+        <label className="field"><span>Boards</span><select value={draft.boardMode} onChange={(event) => setDraft({ ...draft, boardMode: event.target.value as Game["boardMode"] })}><option value="randomized">Different for each</option><option value="shared">Same for everyone</option></select></label>
+        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => setDraft({ ...draft, proofMode: event.target.value as Game["proofMode"] })}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photos</option></select></label>
+        <label className="field"><span>Approval</span><select value={draft.approvalMode} disabled={draft.proofMode === "none"} onChange={(event) => setDraft({ ...draft, approvalMode: event.target.value as Game["approvalMode"] })}><option value="host">Host approves</option><option value="automatic">Automatic</option></select></label>
+        <label className="field"><span>Timer</span><select value={draft.timerMode} onChange={(event) => setDraft({ ...draft, timerMode: event.target.value as TimerMode })}><option value="none">No timer</option><option value="duration">Countdown</option><option value="schedule">Scheduled stops</option></select></label>
+        {draft.timerMode === "duration" && <label className="field"><span>Minutes</span><input min={1} max={1440} type="number" value={draft.timerDurationMinutes} onChange={(event) => setDraft({ ...draft, timerDurationMinutes: Number(event.target.value) })} /></label>}
+        {draft.timerMode === "schedule" && <label className="field"><span>First start time</span><input value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
+        <label className="task-free-toggle"><input checked={draft.freeSpace} type="checkbox" onChange={(event) => setDraft({ ...draft, freeSpace: event.target.checked })} />Include a free center square when possible</label>
+      </div>
+
+      <div className="host-step-actions">
+        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim()} type="button" onClick={saveCustom}>
+          {isSaving ? "Saving..." : "Save and continue"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function TeamManagementPanel({
   groups,
   isAddingGroup,
@@ -3011,6 +3463,13 @@ function TeamManagementPanel({
   onAddGroup,
   onKickPlayer,
   onMovePlayer,
+  onPromotePlayer,
+  onRemoveCohost,
+  onTransferHost,
+  onRemoveGroup,
+  onUpdateGroup,
+  currentHost,
+  playMode,
   showHeading = true,
   submissions,
 }: {
@@ -3022,6 +3481,13 @@ function TeamManagementPanel({
   onAddGroup: (groupName: string) => Promise<boolean>;
   onKickPlayer: (membershipId: string) => void;
   onMovePlayer: (membershipId: string, groupId: string) => void;
+  onPromotePlayer: (membershipId: string) => void;
+  onRemoveCohost: (membershipId: string) => void;
+  onTransferHost: (membershipId: string) => void;
+  onRemoveGroup: (groupId: string) => void;
+  onUpdateGroup: (groupId: string, patch: Parameters<typeof updateGroupDetails>[2]) => void;
+  currentHost: Membership;
+  playMode: Game["playMode"];
   showHeading?: boolean;
   submissions: Submission[];
 }) {
@@ -3123,13 +3589,15 @@ function TeamManagementPanel({
         <div className="section-heading">
           <div>
             <p className="label">Players</p>
-            <h2 id="roster-heading">Team management</h2>
+            <h2 id="roster-heading">
+              {playMode === "individual" ? "Player management" : "Team management"}
+            </h2>
           </div>
           <span>{players.length === 1 ? "1 player" : `${players.length} players`}</span>
         </div>
       )}
 
-      <form className="add-team-form" onSubmit={handleAddGroup}>
+      {playMode === "teams" && <form className="add-team-form" onSubmit={handleAddGroup}>
         <label className="visually-hidden" htmlFor="new-team-name">
           New team name
         </label>
@@ -3149,9 +3617,28 @@ function TeamManagementPanel({
           <Plus aria-hidden="true" />
           {isAddingGroup ? "Adding..." : "Add team"}
         </button>
-      </form>
+      </form>}
 
-      {players.length > 0 ? (
+      {playMode === "teams" && groups.length > 0 && (
+        <div className="team-settings-list">
+          {groups.map((group, index) => (
+            <TeamSettingsRow
+              key={group.id}
+              group={group}
+              canRemove={(playersByGroup.get(group.id)?.length ?? 0) === 0 && !submissions.some((item) => item.groupId === group.id)}
+              canMoveDown={index < groups.length - 1}
+              canMoveUp={index > 0}
+              onMoveDown={() => onUpdateGroup(group.id, { sortOrder: index + 2 })}
+              onMoveUp={() => onUpdateGroup(group.id, { sortOrder: index })}
+              onRemove={() => onRemoveGroup(group.id)}
+              onUpdate={(patch) => onUpdateGroup(group.id, patch)}
+              sortOrder={index + 1}
+            />
+          ))}
+        </div>
+      )}
+
+      {players.length > 0 && playMode === "teams" ? (
         <div className="roster-grid">
           {groups.map((group) => {
             const groupPlayers = playersByGroup.get(group.id) ?? [];
@@ -3227,11 +3714,25 @@ function TeamManagementPanel({
             );
           })}
         </div>
-      ) : (
+      ) : playMode === "teams" ? (
         <div className="empty-state roster-empty-state">
           <Users aria-hidden="true" />
           <strong>No players yet</strong>
           <p>Joined players will appear here.</p>
+        </div>
+      ) : (
+        <div className="individual-roster-list">
+          {players.length === 0 ? (
+            <div className="empty-state roster-empty-state"><Users aria-hidden="true" /><strong>No players yet</strong><p>Share the room link so players can join.</p></div>
+          ) : players.map((player) => (
+            <div className="roster-member" key={player.id}>
+              <span className="roster-member-main"><strong>{player.displayName}</strong><span>{getProofCountLabel(submissionsByPlayer.get(player.userId) ?? 0)}</span></span>
+              <span className="roster-member-actions">
+                <button className="secondary-action" type="button" onClick={() => onPromotePlayer(player.id)}>Make co-host</button>
+                <button className="roster-kick-button" type="button" onClick={() => handleKick(player)}><UserMinus aria-hidden="true" />Kick</button>
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -3241,18 +3742,72 @@ function TeamManagementPanel({
           <div>
             {hosts.map((host) => (
               <span className="host-chip" key={host.id}>
-                {host.displayName}
+                {host.displayName}{host.isOwner ? " · owner" : " · co-host"}
+                {currentHost.isOwner && !host.isOwner && (
+                  <span className="host-chip-actions">
+                    <button type="button" onClick={() => onTransferHost(host.id)}>Transfer</button>
+                    <button type="button" onClick={() => onRemoveCohost(host.id)}>Remove</button>
+                  </span>
+                )}
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {playMode === "teams" && players.length > 0 && (
+        <div className="host-roster-crew" aria-label="Player host controls">
+          <p className="label">Add a co-host</p>
+          <div>{players.map((player) => <button className="host-chip" key={player.id} type="button" onClick={() => onPromotePlayer(player.id)}>+ {player.displayName}</button>)}</div>
         </div>
       )}
     </section>
   );
 }
 
+function TeamSettingsRow({
+  group,
+  canRemove,
+  canMoveDown,
+  canMoveUp,
+  onMoveDown,
+  onMoveUp,
+  onRemove,
+  onUpdate,
+  sortOrder,
+}: {
+  group: Group;
+  canRemove: boolean;
+  canMoveDown: boolean;
+  canMoveUp: boolean;
+  onMoveDown: () => void;
+  onMoveUp: () => void;
+  onRemove: () => void;
+  onUpdate: (patch: Parameters<typeof updateGroupDetails>[2]) => void;
+  sortOrder: number;
+}) {
+  const [name, setName] = useState(group.name);
+  const [colorKey, setColorKey] = useState(
+    () => /--group-([a-z]+)/.exec(group.color)?.[1] ?? "purple",
+  );
+
+  useEffect(() => setName(group.name), [group.name]);
+
+  return (
+    <div className="team-settings-row" style={{ "--group-color": group.color } as React.CSSProperties}>
+      <span className="waiting-team-mark" aria-hidden="true" />
+      <label className="field"><span>Team name</span><input maxLength={40} value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label className="field"><span>Color</span><select value={colorKey} onChange={(event) => setColorKey(event.target.value)}><option value="purple">Purple</option><option value="maroon">Maroon</option><option value="orange">Orange</option><option value="blue">Blue</option><option value="green">Green</option><option value="teal">Teal</option><option value="pink">Pink</option><option value="gold">Gold</option></select></label>
+      <button className="secondary-action" disabled={!name.trim()} type="button" onClick={() => onUpdate({ name: name.trim(), colorKey, sortOrder })}>Save</button>
+      <span className="team-order-actions"><button disabled={!canMoveUp} type="button" onClick={onMoveUp}>Up</button><button disabled={!canMoveDown} type="button" onClick={onMoveDown}>Down</button></span>
+      <button aria-label={`Remove ${group.name}`} className="roster-kick-button" disabled={!canRemove} type="button" onClick={onRemove}><Trash2 aria-hidden="true" /></button>
+    </div>
+  );
+}
+
 function BoardEditor({
   boardAssignments,
+  boardSize,
   boardsLocked,
   groups,
   onAddTask,
@@ -3266,6 +3821,7 @@ function BoardEditor({
   tasks,
 }: {
   boardAssignments: BoardAssignment[];
+  boardSize: BoardSize;
   boardsLocked: boolean;
   groups: Group[];
   onAddTask: () => void;
@@ -3282,8 +3838,15 @@ function BoardEditor({
   tasks: Task[];
 }) {
   const [isCollapsed, setIsCollapsed] = useState(!openByDefault);
+  const [taskSearch, setTaskSearch] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState(groups[0]?.id ?? "");
   const sortedTasks = useMemo(() => getSortedTasks(tasks), [tasks]);
+  const visibleTasks = useMemo(() => {
+    const query = taskSearch.trim().toLowerCase();
+    return query
+      ? sortedTasks.filter((task) => `${task.title} ${task.description}`.toLowerCase().includes(query))
+      : sortedTasks;
+  }, [sortedTasks, taskSearch]);
   const assignedCounts = useMemo(() => {
     const counts = new Map<string, number>();
 
@@ -3374,8 +3937,13 @@ function BoardEditor({
                 <span>{sortedTasks.length} total</span>
               </div>
 
+              <label className="field task-search-field">
+                <span>Find a task</span>
+                <input type="search" value={taskSearch} placeholder="Search titles or descriptions" onChange={(event) => setTaskSearch(event.target.value)} />
+              </label>
+
               <div className="task-pool-list">
-                {sortedTasks.map((task) => (
+                {visibleTasks.map((task) => (
                   <TaskPoolRow
                     key={task.id}
                     assignedCount={assignedCounts.get(task.id) ?? 0}
@@ -3391,7 +3959,7 @@ function BoardEditor({
             <div className="group-board-panel">
               <div className="editor-panel-heading">
                 <strong>Group boards</strong>
-                <span>{BOARD_SLOT_COUNT} slots each</span>
+                <span>{getBoardSlotCount(boardSize)} slots each</span>
               </div>
 
               <div className="group-board-tabs" aria-label="Choose group board">
@@ -3416,6 +3984,7 @@ function BoardEditor({
                 <GroupBoardSlotEditor
                   assignments={boardAssignments}
                   boardsLocked={boardsLocked}
+                  boardSize={boardSize}
                   group={selectedGroup}
                   onSave={(taskIds) => onSaveGroupBoard(selectedGroup.id, taskIds)}
                   tasks={sortedTasks}
@@ -3474,12 +4043,15 @@ function TaskPoolRow({
   }, [task]);
 
   return (
-    <article className="task-pool-row">
-      <div className="task-pool-icon">
-        <Icon aria-hidden="true" />
-      </div>
+    <details className="task-pool-row">
+      <summary className="task-pool-summary">
+        <span className="task-pool-icon"><Icon aria-hidden="true" /></span>
+        <span><strong>{task.title}</strong><small>{task.description}</small></span>
+        <em>{assignedCount} boards</em>
+        <ChevronDown aria-hidden="true" />
+      </summary>
 
-      <div className="task-pool-fields">
+      <div className="task-pool-fields task-pool-edit-fields">
         <label className="stop-field">
           <span>Title</span>
           <input
@@ -3552,26 +4124,28 @@ function TaskPoolRow({
           </div>
         </div>
       </div>
-    </article>
+    </details>
   );
 }
 
 function GroupBoardSlotEditor({
   assignments,
+  boardSize,
   boardsLocked,
   group,
   onSave,
   tasks,
 }: {
   assignments: BoardAssignment[];
+  boardSize: BoardSize;
   boardsLocked: boolean;
   group: Group;
   onSave: (taskIds: string[]) => void;
   tasks: Task[];
 }) {
   const boardTaskIds = useMemo(
-    () => getGroupBoardSlotTaskIds(group.id, tasks, assignments),
-    [assignments, group.id, tasks],
+    () => getGroupBoardSlotTaskIds(group.id, tasks, assignments, boardSize),
+    [assignments, boardSize, group.id, tasks],
   );
   const [draftTaskIds, setDraftTaskIds] = useState(boardTaskIds);
   const selectedTaskIds = draftTaskIds.filter(Boolean);
@@ -3601,15 +4175,15 @@ function GroupBoardSlotEditor({
       <div className="group-board-summary">
         <strong>{group.name}</strong>
         <span>
-          {selectedTaskIds.length} of {BOARD_SLOT_COUNT} slots filled
+          {selectedTaskIds.length} of {getBoardSlotCount(boardSize)} slots filled
         </span>
       </div>
 
-      <div className="board-slot-grid">
-        {Array.from({ length: BOARD_SLOT_COUNT }, (_, index) => {
+      <div className="board-slot-grid" style={{ "--board-size": boardSize } as React.CSSProperties}>
+        {Array.from({ length: getBoardSlotCount(boardSize) }, (_, index) => {
           const slotNumber = index + 1;
           const selectedTaskId = draftTaskIds[index] ?? "";
-          const isCenterSlot = slotNumber === BOARD_CENTER_SLOT;
+          const isCenterSlot = slotNumber === getBoardCenterSlot(boardSize);
 
           return (
             <label
@@ -3848,6 +4422,7 @@ function PlayTimeRow({
 }
 
 function TaskBoard({
+  boardSize,
   groupId,
   onTaskSelect,
   pendingProofTaskIds,
@@ -3855,6 +4430,7 @@ function TaskBoard({
   submissions,
   tasks,
 }: {
+  boardSize: BoardSize;
   groupId: string;
   onTaskSelect: (taskId: string) => void;
   pendingProofTaskIds: Set<string>;
@@ -3863,7 +4439,12 @@ function TaskBoard({
   tasks: Task[];
 }) {
   return (
-    <div className="blackout-board" role="list" aria-label="Blackout board">
+    <div
+      className="blackout-board"
+      role="list"
+      aria-label="Game board"
+      style={{ "--board-size": boardSize } as React.CSSProperties}
+    >
       {tasks.map((task) => (
         <TaskTile
           key={task.id}
@@ -3999,9 +4580,11 @@ function SelectedTaskCard({
   onDismiss,
   onRetryPendingProof,
   onSubmitProof,
+  onCompleteTask,
   pendingProof,
   submission,
   task,
+  proofMode,
 }: {
   groupId: string;
   isUploading: boolean;
@@ -4009,9 +4592,11 @@ function SelectedTaskCard({
   onDismiss: () => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
+  onCompleteTask: (taskId: string) => void;
   pendingProof?: PendingProofUpload;
   submission?: Submission;
   task: Task;
+  proofMode: Game["proofMode"];
 }) {
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -4020,7 +4605,9 @@ function SelectedTaskCard({
   const Icon = ICONS[task.icon] ?? Circle;
   const status = getTaskStatus(task, groupId, submission ? [submission] : []);
   const inputId = `${groupId}-${task.id}`;
-  const proofNote = getProofStateNote(status, task.free, isReplacingProof);
+  const proofNote = submission && !submission.imagePath
+    ? "Completed without a photo. Add one if you want, or mark it incomplete."
+    : getProofStateNote(status, task.free, isReplacingProof);
   const showPendingProofPanel =
     Boolean(pendingProof) && (!isUploading || Boolean(pendingProof?.lastError));
   const canSubmitProof =
@@ -4083,7 +4670,7 @@ function SelectedTaskCard({
         </div>
       </div>
 
-      {submission && (
+      {submission?.imagePath && (
         <figure
           className={
             submission.status === "retake"
@@ -4199,6 +4786,22 @@ function SelectedTaskCard({
           )}
         </div>
       )}
+
+      {!task.free && proofMode !== "required" && !isReplacingProof && (
+        <button
+          className="primary-action"
+          disabled={isUploading}
+          type="button"
+          onClick={() => onCompleteTask(task.id)}
+        >
+          <Check aria-hidden="true" />
+          {status === "approved" && !submission?.imagePath
+            ? "Mark incomplete"
+            : proofMode === "optional"
+              ? "Complete without photo"
+              : "Mark complete"}
+        </button>
+      )}
     </section>
   );
 }
@@ -4247,12 +4850,14 @@ function TeamCard({
 }
 
 function HostLiveBoard({
+  boardSize,
   group,
   onClose,
   setSubmissionStatus,
   submissions,
   tasks,
 }: {
+  boardSize: BoardSize;
   group: Group;
   onClose: () => void;
   setSubmissionStatus: (submissionId: string, status: Submission["status"]) => void;
@@ -4321,7 +4926,7 @@ function HostLiveBoard({
             pending
           </span>
         </div>
-        <div className="blackout-board host-board-grid">
+        <div className="blackout-board host-board-grid" style={{ "--board-size": boardSize } as React.CSSProperties}>
           {tasks.map((task) => {
             const taskSubmission = groupSubmissions.find(
               (submission) => submission.taskId === task.id,
@@ -4379,7 +4984,7 @@ function ProofList({
   } | null>(null);
   const [zipDownloadError, setZipDownloadError] = useState("");
   const sortedSubmissions = useMemo(
-    () => [...submissions].sort((a, b) => b.createdAt - a.createdAt),
+    () => submissions.filter((submission) => Boolean(submission.imagePath)).sort((a, b) => b.createdAt - a.createdAt),
     [submissions],
   );
   const lightboxSubmission =
@@ -4717,16 +5322,18 @@ function getGroupBoardSlotTaskIds(
   groupId: string,
   tasks: Task[],
   assignments: BoardAssignment[],
+  boardSize: BoardSize = 5,
 ) {
+  const slotCount = getBoardSlotCount(boardSize);
   const taskIds = new Set(tasks.map((task) => task.id));
-  const slotTaskIds = Array.from({ length: BOARD_SLOT_COUNT }, () => "");
+  const slotTaskIds = Array.from({ length: slotCount }, () => "");
   const groupAssignments = assignments
     .filter((assignment) => assignment.groupId === groupId)
     .sort((first, second) => first.slotOrder - second.slotOrder);
 
   if (groupAssignments.length === 0) {
     getSortedTasks(tasks)
-      .slice(0, BOARD_SLOT_COUNT)
+      .slice(0, slotCount)
       .forEach((task, index) => {
         slotTaskIds[index] = task.id;
       });
@@ -4736,7 +5343,7 @@ function getGroupBoardSlotTaskIds(
   groupAssignments.forEach((assignment) => {
     if (
       assignment.slotOrder >= 1 &&
-      assignment.slotOrder <= BOARD_SLOT_COUNT &&
+      assignment.slotOrder <= slotCount &&
       taskIds.has(assignment.taskId)
     ) {
       slotTaskIds[assignment.slotOrder - 1] = assignment.taskId;
@@ -4818,7 +5425,7 @@ function getProofZipFilename({
     task?.title ?? submission.taskId,
     getSubmitterName(submission),
   ]
-    .map(getFilenamePart)
+    .map((value) => getFilenamePart(value ?? ""))
     .filter(Boolean)
     .join("-");
   const extension =
@@ -5134,23 +5741,29 @@ function getBoardTileTitle(task: Task) {
   return task.title;
 }
 
-function generateGroupBoards(groups: Group[], tasks: Task[]) {
+function generateGroupBoards(
+  groups: Group[],
+  tasks: Task[],
+  boardSize: BoardSize,
+  includeFreeSpace: boolean,
+  boardMode: Game["boardMode"],
+) {
   const sortedTasks = getSortedTasks(tasks);
-  const centerTask = sortedTasks.find((task) => task.free) ?? null;
+  const centerTask = includeFreeSpace && boardSize % 2 === 1
+    ? sortedTasks.find((task) => task.free) ?? null
+    : null;
   const nonFreeTasks = sortedTasks.filter(
     (task) => !task.free && task.id !== centerTask?.id,
   );
-  const sharedTasks = nonFreeTasks.slice(
-    0,
-    Math.min(DEFAULT_SHARED_BOARD_TASK_COUNT, nonFreeTasks.length),
-  );
+  const sharedCount = Math.min(DEFAULT_SHARED_BOARD_TASK_COUNT, Math.max(1, boardSize - 1));
+  const sharedTasks = nonFreeTasks.slice(0, Math.min(sharedCount, nonFreeTasks.length));
   const variedPool = nonFreeTasks.filter(
     (task) => !sharedTasks.some((sharedTask) => sharedTask.id === task.id),
   );
 
   return groups.reduce<Record<string, string[]>>((boards, group) => {
-    const boardTaskIds = Array.from({ length: BOARD_SLOT_COUNT }, () => "");
-    const shuffledTasks = stableShuffleTasks(variedPool, group.id);
+    const boardTaskIds = Array.from({ length: getBoardSlotCount(boardSize) }, () => "");
+    const shuffledTasks = stableShuffleTasks(variedPool, boardMode === "shared" ? "shared" : group.id);
     const taskQueue = [
       ...sharedTasks.map((task) => task.id),
       ...shuffledTasks.map((task) => task.id),
@@ -5160,7 +5773,7 @@ function generateGroupBoards(groups: Group[], tasks: Task[]) {
     boardTaskIds.forEach((_, index) => {
       const slotNumber = index + 1;
 
-      if (centerTask && slotNumber === BOARD_CENTER_SLOT) {
+      if (centerTask && slotNumber === getBoardCenterSlot(boardSize)) {
         boardTaskIds[index] = centerTask.id;
         return;
       }
@@ -5176,6 +5789,14 @@ function generateGroupBoards(groups: Group[], tasks: Task[]) {
     boards[group.id] = boardTaskIds;
     return boards;
   }, {});
+}
+
+function getBoardSlotCount(boardSize: BoardSize) {
+  return boardSize * boardSize;
+}
+
+function getBoardCenterSlot(boardSize: BoardSize) {
+  return Math.floor(getBoardSlotCount(boardSize) / 2) + 1;
 }
 
 function stableShuffleTasks(tasks: Task[], seed: string) {
@@ -5210,6 +5831,44 @@ function getTaskStatus(
   );
 
   return submission?.status ?? "ready";
+}
+
+function createPlayerGroup(
+  member: Pick<Membership | RosterMember, "id" | "displayName">,
+  index: number,
+): Group {
+  const colors = ["purple", "blue", "green", "orange", "teal", "pink", "gold", "maroon"];
+  const colorKey = colors[index % colors.length];
+  return {
+    id: member.id,
+    name: member.displayName,
+    shortName: member.displayName,
+    color: `var(--group-${colorKey})`,
+    dark: `var(--group-${colorKey}-dark)`,
+    soft: `var(--group-${colorKey}-soft)`,
+  };
+}
+
+function hasCompletedBingo(
+  tasks: Task[],
+  ownerId: string,
+  submissions: Submission[],
+  boardSize: BoardSize,
+) {
+  if (tasks.length < getBoardSlotCount(boardSize)) return false;
+  const complete = tasks.slice(0, getBoardSlotCount(boardSize)).map(
+    (task) => getTaskStatus(task, ownerId, submissions) === "approved",
+  );
+  const lines: number[][] = [];
+  for (let row = 0; row < boardSize; row += 1) {
+    lines.push(Array.from({ length: boardSize }, (_, column) => row * boardSize + column));
+  }
+  for (let column = 0; column < boardSize; column += 1) {
+    lines.push(Array.from({ length: boardSize }, (_, row) => row * boardSize + column));
+  }
+  lines.push(Array.from({ length: boardSize }, (_, index) => index * boardSize + index));
+  lines.push(Array.from({ length: boardSize }, (_, index) => (index + 1) * (boardSize - 1)));
+  return lines.some((line) => line.every((index) => complete[index]));
 }
 
 function getStatusLabel(status: TaskStatus) {
@@ -5443,6 +6102,16 @@ function getGameRemainingSeconds(
   stops: HuntStop[],
   activeStopIndex: number,
 ) {
+  if (game.timerMode === "none") return 0;
+  if (game.timerMode === "duration") {
+    if (!game.timerRunning) return game.timerSecondsTotal;
+    const startedAt = new Date(game.timerStartedAt).getTime();
+    if (Number.isNaN(startedAt)) return game.timerSecondsTotal;
+    return Math.max(
+      0,
+      game.timerSecondsTotal - Math.floor((Date.now() - startedAt) / 1000),
+    );
+  }
   const target = getGameTimerTarget(game, stops, activeStopIndex);
 
   if (!target) {
@@ -5512,11 +6181,43 @@ function getTimerDisplay(
   timerSeconds: number,
   countdownCaption: string,
 ): TimerDisplay {
+  if (!game.setupComplete) {
+    return {
+      label: "Ready",
+      caption: "not started",
+      state: "idle",
+    };
+  }
+
   if (game.phase === "review") {
     return {
       label: "Done",
       caption: "finished",
       state: "finished",
+    };
+  }
+
+  if (game.timerMode === "none") {
+    return {
+      label: game.setupComplete ? "Live" : "Ready",
+      caption: "no timer",
+      state: "idle",
+    };
+  }
+
+  if (!game.setupComplete) {
+    return {
+      label: "Ready",
+      caption: "not started",
+      state: "idle",
+    };
+  }
+
+  if (game.timerMode === "duration" && !game.timerRunning) {
+    return {
+      label: formatTimer(timerSeconds),
+      caption: "paused",
+      state: "idle",
     };
   }
 
