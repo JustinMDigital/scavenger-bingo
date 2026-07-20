@@ -1,5 +1,10 @@
 # Supabase Setup
 
+> Legacy reference only. Supabase is no longer used by the running app. Follow
+> `CLOUDFLARE_SETUP.md` for the current local and public release process. This
+> file and the `supabase/` migration history remain temporarily as a record of
+> the former backend while the Cloudflare replacement is validated.
+
 Use a dedicated Supabase project for this app.
 
 ## Hosted Project
@@ -16,12 +21,12 @@ supabase link --project-ref <new-project-ref>
 supabase db push
 ```
 
-The migration seeds:
+The migrations seed a generic starter template:
 
-- Initial game code: `FAMILY`
-- Groups: Purple, Maroon, Orange
-- 25 board tasks
-- 3 route stops
+- Initial game code: `STARTER`
+- Groups: Team 1, Team 2, Team 3
+- A generic task pool
+- 3 editable route stops
 
 The seeded host secret is locked by default. Set a host PIN before using the hosted project or local development:
 
@@ -33,7 +38,7 @@ where game_id = '00000000-0000-4000-8000-000000000001';
 
 After the host PIN is set, open `/host` and choose the game code players
 should use. Opening an existing code returns to that room; opening a new code
-creates a separate room cloned from the seeded game setup.
+creates a separate room cloned from the generic starter setup.
 
 After pushing the migration, run advisors against the linked project:
 
@@ -54,7 +59,7 @@ npm run dev
 
 ## Manual Checks
 
-1. Join Purple in one browser and Orange in private/incognito.
+1. Join Team 1 in one browser and Team 2 in private/incognito.
 2. Upload a proof photo and refresh; it should persist.
 3. Open `/host`, claim host with the PIN, and confirm proof appears live.
 4. Approve and retake from host view; the player board should update.

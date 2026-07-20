@@ -485,6 +485,11 @@ img {
   gap: var(--space-md);
 }
 
+.loading-actions {
+  display: grid;
+  gap: var(--space-sm);
+}
+
 .field {
   display: grid;
   gap: var(--space-xs);

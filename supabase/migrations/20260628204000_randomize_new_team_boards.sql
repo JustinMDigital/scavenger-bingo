@@ -110,11 +110,8 @@ begin
     select t.slug
     from public.tasks t
     where t.game_id = target_game_id
-      and (t.slug = 'team-jello-shot' or t.is_free is true)
-    order by
-      (t.slug = 'team-jello-shot') desc,
-      t.sort_order,
-      t.slug
+      and t.is_free is true
+    order by t.sort_order, t.slug
     limit 1
   ),
   shared_tasks as (
@@ -123,7 +120,7 @@ begin
       row_number() over (order by t.sort_order, t.slug)::integer as slot_order
     from public.tasks t
     where t.game_id = target_game_id
-      and t.sort_order < 37
+      and t.is_free is false
       and not exists (
         select 1
         from center_task c
@@ -132,58 +129,30 @@ begin
     order by t.sort_order, t.slug
     limit 4
   ),
-  hard_slot_numbers as (
-    select *
-    from (
-      values
-        (7, 1),
-        (16, 2),
-        (23, 3)
-    ) as hard_slots(slot_order, hard_rank)
-  ),
-  non_hard_slot_numbers as (
+  varied_slot_numbers as (
     select
       slots.slot_order,
-      row_number() over (order by slots.slot_order)::integer as non_hard_rank
+      row_number() over (order by slots.slot_order)::integer as slot_rank
     from generate_series(5, 25) as slots(slot_order)
-    where slots.slot_order not in (7, 16, 23)
+    where not exists (
+        select 1
+        from shared_tasks st
+        where st.slot_order = slots.slot_order
+      )
       and (
         slots.slot_order <> 13
         or not exists (select 1 from center_task)
       )
   ),
-  randomized_hard_tasks as (
+  randomized_tasks as (
     select
       t.slug as task_slug,
       row_number() over (
-        order by md5(created_group.slug || ':hard:' || t.slug), t.sort_order, t.slug
-      )::integer as hard_rank
+        order by md5(created_group.slug || ':task:' || t.slug), t.sort_order, t.slug
+      )::integer as task_rank
     from public.tasks t
     where t.game_id = target_game_id
-      and t.sort_order >= 37
-      and not exists (
-        select 1
-        from center_task c
-        where c.slug = t.slug
-      )
-  ),
-  group_hard_tasks as (
-    select
-      randomized_hard_tasks.task_slug,
-      hard_slot_numbers.slot_order
-    from randomized_hard_tasks
-    join hard_slot_numbers
-      on hard_slot_numbers.hard_rank = randomized_hard_tasks.hard_rank
-  ),
-  randomized_non_hard_tasks as (
-    select
-      t.slug as task_slug,
-      row_number() over (
-        order by md5(created_group.slug || ':non-hard:' || t.slug), t.sort_order, t.slug
-      )::integer as non_hard_rank
-    from public.tasks t
-    where t.game_id = target_game_id
-      and t.sort_order < 37
+      and t.is_free is false
       and not exists (
         select 1
         from center_task c
@@ -195,24 +164,20 @@ begin
         where s.slug = t.slug
       )
   ),
-  group_non_hard_tasks as (
+  group_varied_tasks as (
     select
-      randomized_non_hard_tasks.task_slug,
-      non_hard_slot_numbers.slot_order
-    from randomized_non_hard_tasks
-    join non_hard_slot_numbers
-      on non_hard_slot_numbers.non_hard_rank =
-        randomized_non_hard_tasks.non_hard_rank
+      randomized_tasks.task_slug,
+      varied_slot_numbers.slot_order
+    from randomized_tasks
+    join varied_slot_numbers
+      on varied_slot_numbers.slot_rank = randomized_tasks.task_rank
   ),
   board_tasks as (
     select shared_tasks.slug as task_slug, shared_tasks.slot_order
     from shared_tasks
     union all
-    select group_non_hard_tasks.task_slug, group_non_hard_tasks.slot_order
-    from group_non_hard_tasks
-    union all
-    select group_hard_tasks.task_slug, group_hard_tasks.slot_order
-    from group_hard_tasks
+    select group_varied_tasks.task_slug, group_varied_tasks.slot_order
+    from group_varied_tasks
     union all
     select center_task.slug as task_slug, 13 as slot_order
     from center_task

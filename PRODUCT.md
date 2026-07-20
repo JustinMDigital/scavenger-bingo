@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Family-party players split into multiple groups for a scavenger-blackout game. They are likely moving between locations or stops, checking a shared game state quickly, and coordinating with teammates while time is limited. A host or organizer sets the structure of the hunt, while groups focus on completing every task on their blackout board.
+Event players split into multiple groups for a scavenger-blackout game. They are likely moving between locations or stops, checking a shared game state quickly, and coordinating with teammates while time is limited. A host or organizer sets the structure of the hunt, while groups focus on completing every task on their blackout board.
 
 ## Product Purpose
 
@@ -16,7 +16,7 @@ Success means players can understand what to do immediately, complete tasks with
 
 ## Brand Personality
 
-Fun, simple, and energetic. The interface should feel friendly enough for a family party, but still clear and reliable under time pressure. It should make the game feel active and social without becoming noisy or childish.
+Fun, simple, and energetic. The interface should feel friendly enough for casual events, but still clear and reliable under time pressure. It should make the game feel active and social without becoming noisy or childish.
 
 ## Anti-references
 
@@ -32,4 +32,14 @@ This should not look like a corporate dashboard, a casino or gambling app, or a 
 
 ## Accessibility & Inclusion
 
-Target WCAG AA. Completion states must be color-blind safe and should not rely on color alone. Motion should respect reduced-motion preferences. Text, tap targets, upload controls, timer states, and blackout-board cells should remain readable and usable for mixed-age family groups in bright, distracting, real-world settings.
+Target WCAG AA. Completion states must be color-blind safe and should not rely on color alone. Motion should respect reduced-motion preferences. Text, tap targets, upload controls, timer states, and blackout-board cells should remain readable and usable for mixed-age event groups in bright, distracting, real-world settings.
+
+## Public Operations
+
+The public release is a temporary event-room service hosted as one Cloudflare
+project. Website files, room logic, live updates, temporary data, and proof
+photos deploy together. Rooms expire after seven days and are deliberately
+bounded so the app can operate inside Cloudflare's free plan without a separate
+database or routinely maintained server. Proof photos are not a permanent
+archive and the product should say so wherever users might reasonably expect
+long-term storage.

@@ -31,6 +31,7 @@ import {
   Goal,
   Grid3X3,
   HardHat,
+  Hash,
   HeartHandshake,
   Image,
   IceCreamBowl,
@@ -40,6 +41,7 @@ import {
   Lock,
   Mailbox,
   Martini,
+  Palette,
   Play,
   Plus,
   Pizza,
@@ -50,6 +52,7 @@ import {
   Ship,
   Shirt,
   Signpost,
+  Smile,
   Shuffle,
   Star,
   TimerReset,
@@ -124,7 +127,6 @@ import type {
   TaskStatus,
 } from "./gameService";
 import type { PendingProofUpload } from "./pendingProofStore";
-import { isSupabaseConfigured } from "./supabaseClient";
 
 type BoardView = "grid" | "list";
 
@@ -187,13 +189,9 @@ const DEFAULT_PLAY_WINDOW_MINUTES = 30;
 const DEFAULT_STOP_WINDOW_MINUTES = 30;
 const BOARD_SLOT_COUNT = 25;
 const BOARD_CENTER_SLOT = 13;
-const BOARD_CENTER_TASK_ID = "team-jello-shot";
-const SHARED_GENERATED_TASK_COUNT = 4;
-const HARD_GENERATED_TASK_COUNT = 3;
-const HARD_GENERATED_SLOT_NUMBERS = new Set([7, 16, 23]);
-const HARD_GENERATED_SORT_ORDER_MIN = 37;
-const MAX_PROOF_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_PROOF_FILE_MB = MAX_PROOF_FILE_BYTES / (1024 * 1024);
+const DEFAULT_SHARED_BOARD_TASK_COUNT = 4;
+const MAX_PROOF_FILE_BYTES = 500 * 1024;
+const PROOF_MAX_FILE_LABEL = "500 KB";
 const PROOF_IMAGE_EXTENSIONS = new Set(["heic", "heif", "jpeg", "jpg", "png", "webp"]);
 const PROOF_IMAGE_MIME_TYPES = new Set([
   "image/heic",
@@ -206,8 +204,8 @@ const PROOF_IMAGE_ACCEPT =
   "image/heic,image/heif,image/jpeg,image/png,image/webp,.heic,.heif,.jpeg,.jpg,.png,.webp";
 const PROOF_RESIZED_IMAGE_TYPE = "image/jpeg";
 const PROOF_RESIZED_IMAGE_EXTENSION = "jpg";
-const PROOF_MAX_IMAGE_EDGE = 2000;
-const PROOF_COMPRESSION_QUALITIES = [0.82, 0.72, 0.62, 0.52];
+const PROOF_MAX_IMAGE_EDGE = 1280;
+const PROOF_COMPRESSION_QUALITIES = [0.78, 0.68, 0.58, 0.48, 0.38];
 const GAME_CODE_PATTERN = /^[A-Z0-9-]{3,24}$/;
 const GAME_CODE_ERROR = "Game code must be 3-24 letters, numbers, or hyphens.";
 
@@ -237,12 +235,14 @@ const ICONS: Record<string, LucideIcon> = {
   Goal,
   Grid3X3,
   HardHat,
+  Hash,
   HeartHandshake,
   IceCreamBowl,
   Landmark,
   Leaf,
   Mailbox,
   Martini,
+  Palette,
   Pizza,
   Route,
   Sailboat,
@@ -250,6 +250,7 @@ const ICONS: Record<string, LucideIcon> = {
   Ship,
   Shirt,
   Signpost,
+  Smile,
   Star,
   Ticket,
   Toilet,
@@ -270,60 +271,14 @@ const TASK_ICON_OPTIONS = Object.keys(ICONS).sort((first, second) =>
   first.localeCompare(second),
 );
 
-const BOARD_TILE_TITLES: Record<string, string> = {
-  "22nd-street-pizza-box": "Pizza Box",
-  "22nd-street-pizza-delivery": "Pizza Delivery",
-  "28th-street-benches": "28th Benches",
-  "2807-flag-salute": "Flag Salute",
-  "arcade-tickets": "Arcade Tickets",
-  "balboa-bar-or-frozen-banana": "Balboa Bar",
-  "balboa-fun-zone-ferris-wheel": "Ferris Wheel",
-  "balboa-island-ferry-sign": "Ferry Sign",
-  "balboa-pavilion-sign": "Pavilion Sign",
-  "balboa-pier": "Balboa Pier",
-  "beach-volleyball-court": "Volleyball",
-  "chargers-or-rams-shirt": "LA NFL Shirt",
-  "college-shirt": "College Shirt",
-  "dont-look-up-sign": "Look Up Sign",
-  "dory-fleet-sign": "Dory Fleet",
-  "enjoy-a-slice": "Enjoy A Slice",
-  "ferris-wheel-ticket-booth": "Ferris Tickets",
-  "figure-8s": "Figure 8s",
-  "flying-blue-discs": "Blue Discs",
-  "friendly-pelican": "Pelican",
-  "grab-a-piece-of-candy": "Candy",
-  "hero-who-did-go": "Hero Sign",
-  "italian-restaurant": "Italian Food",
-  "kids-lighthouse": "Kids Lighthouse",
-  "lifeguard-donor-wall": "Donor Wall",
-  "lifeguard-truck": "Lifeguard Truck",
-  "mexican-food-restaurant": "Mexican Food",
-  "newport-elementary-sign": "School Sign",
-  "newport-pier": "Newport Pier",
-  "newport-trolley-stop": "Trolley Stop",
-  "non-pier-restroom": "Restroom",
-  "playground-hopscotch": "Hopscotch",
-  "public-fire-ring": "Fire Ring",
-  "random-act-of-kindness": "Kindness",
-  "selfie-with-a-dog": "Dog Selfie",
-  "striped-beach-towel": "Beach Towel",
-  "team-drink-break": "Drink Break",
-  "team-jello-shot": "Jello Shot",
-  "team-pyramid": "Team Pyramid",
-  "tommy-bahama-umbrella": "Tommy Umbrella",
-  "usa-soccer-fan": "USA Soccer Fan",
-};
-
 export default function App() {
   const storedPlayer = useMemo(() => readStoredPlayer(), []);
-  const initialGameCode = useMemo(() => readStoredGameCode(), []);
+  const initialGameCode = useMemo(() => readInitialGameCode(), []);
   const [path, setPath] = useState(() => window.location.pathname);
   const isHostRoute = path === "/host";
   const [gameCode, setGameCode] = useState(initialGameCode);
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [isLoading, setIsLoading] = useState(
-    isSupabaseConfigured && initialGameCode.length > 0,
-  );
+  const [isLoading, setIsLoading] = useState(initialGameCode.length > 0);
   const [error, setError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [isTaskCardDismissed, setIsTaskCardDismissed] = useState(false);
@@ -346,11 +301,6 @@ export default function App() {
 
   const refreshGameState = useCallback(
     async (code = gameCode, options?: { silent?: boolean }) => {
-      if (!isSupabaseConfigured) {
-        setIsLoading(false);
-        return null;
-      }
-
       const requestedCode = code.trim().toUpperCase();
 
       if (!requestedCode) {
@@ -379,6 +329,7 @@ export default function App() {
         });
         setGameCode(nextState.game.code);
         storeGameCode(nextState.game.code);
+        syncGameCodeToUrl(nextState.game.code);
         setError("");
         return nextState;
       } catch (caughtError) {
@@ -397,13 +348,21 @@ export default function App() {
   );
 
   useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname);
+    const onPopState = () => {
+      setPath(window.location.pathname);
+      const urlGameCode = readGameCodeFromUrl();
+
+      if (urlGameCode) {
+        setGameCode(urlGameCode);
+      }
+    };
+
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   function goToHostView() {
-    window.history.pushState({}, "", "/host");
+    window.history.pushState({}, "", getPathWithGameCode("/host", gameCode));
     setPath("/host");
   }
 
@@ -437,15 +396,21 @@ export default function App() {
   useEffect(() => {
     const loadedGameId = gameState?.game.id;
     const loadedGameCode = gameState?.game.code;
+    const loadedMembershipId = gameState?.membership?.id;
 
-    if (!loadedGameId || !loadedGameCode) {
+    if (!loadedGameId || !loadedGameCode || !loadedMembershipId) {
       return undefined;
     }
 
     return subscribeToGameChanges(loadedGameId, () => {
       void refreshGameState(loadedGameCode, { silent: true });
     });
-  }, [gameState?.game.code, gameState?.game.id, refreshGameState]);
+  }, [
+    gameState?.game.code,
+    gameState?.game.id,
+    gameState?.membership?.id,
+    refreshGameState,
+  ]);
 
   useEffect(() => {
     if (!gameState || gameState.game.phase === "review") {
@@ -1381,12 +1346,17 @@ export default function App() {
     );
   }
 
-  if (!isSupabaseConfigured) {
-    return <SetupNotice />;
-  }
-
   if (isLoading && !gameState) {
-    return <LoadingView />;
+    return (
+      <LoadingView
+        gameCode={gameCode}
+        onEnterCode={() => {
+          setIsLoading(false);
+          setError("");
+        }}
+        onRetry={() => void refreshGameState(gameCode)}
+      />
+    );
   }
 
   if (!gameState) {
@@ -1707,31 +1677,48 @@ function AbandonGameDialog({
   );
 }
 
-function SetupNotice() {
-  return (
-    <main className="main-content">
-      <section className="welcome-card" aria-labelledby="setup-title">
-        <div>
-          <p className="label">Supabase setup</p>
-          <h1 id="setup-title">Backend env vars are missing.</h1>
-          <p>
-            Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to
-            .env.local, then restart Vite.
-          </p>
-        </div>
-      </section>
-    </main>
-  );
-}
+function LoadingView({
+  gameCode,
+  onEnterCode,
+  onRetry,
+}: {
+  gameCode: string;
+  onEnterCode: () => void;
+  onRetry: () => void;
+}) {
+  const [isSlowLoad, setIsSlowLoad] = useState(false);
+  const roomCode = normalizeGameCodeInput(gameCode);
 
-function LoadingView() {
+  useEffect(() => {
+    setIsSlowLoad(false);
+
+    const timeoutId = window.setTimeout(() => setIsSlowLoad(true), 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [roomCode]);
+
   return (
     <main className="main-content">
       <section className="welcome-card" aria-label="Loading game">
         <div>
           <p className="label">Scavenger Blackout</p>
-          <h1>Loading game...</h1>
+          <h1>{roomCode ? `Loading ${roomCode}...` : "Loading game..."}</h1>
+          <p>
+            {isSlowLoad
+              ? "Still trying. If service is spotty, retry or enter the room code again."
+              : "Connecting to the room."}
+          </p>
         </div>
+
+        {isSlowLoad && (
+          <div className="loading-actions">
+            <button className="join-submit" type="button" onClick={onRetry}>
+              Retry
+            </button>
+            <button className="secondary-action" type="button" onClick={onEnterCode}>
+              Enter code
+            </button>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -1828,7 +1815,7 @@ function GameCodeGate({
               maxLength={24}
               value={gameCode}
               onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-              placeholder="FAMILY-2026"
+              placeholder="EVENT-2026"
             />
           </label>
           <button
@@ -2005,7 +1992,7 @@ function JoinView({
   return (
     <section className="welcome-card" aria-labelledby="join-title">
       <div>
-        <p className="label">Family party hunt</p>
+        <p className="label">Group hunt</p>
         <h2 id="join-title">Join your group, then start filling the board.</h2>
         <p>
           Your next screen shows the blackout card and one current task. Send
@@ -2037,7 +2024,7 @@ function JoinView({
             maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-            placeholder="FAMILY-2026"
+            placeholder="EVENT-2026"
           />
         </label>
 
@@ -2154,7 +2141,7 @@ function HostGate({
             maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
-            placeholder="FAMILY-2026"
+            placeholder="EVENT-2026"
           />
         </label>
         <label className="field">
@@ -2171,10 +2158,12 @@ function HostGate({
           <input
             autoComplete="one-time-code"
             inputMode="numeric"
+            minLength={4}
+            maxLength={32}
             type="password"
             value={pin}
             onChange={(event) => setPin(event.target.value)}
-            placeholder="PIN"
+            placeholder="4+ character PIN"
           />
         </label>
         <button
@@ -4945,49 +4934,31 @@ function isValidGameCode(gameCode: string) {
 }
 
 function getBoardTileTitle(task: Task) {
-  return BOARD_TILE_TITLES[task.id] ?? task.title;
+  return task.title;
 }
 
 function generateGroupBoards(groups: Group[], tasks: Task[]) {
   const sortedTasks = getSortedTasks(tasks);
-  const centerTask =
-    sortedTasks.find((task) => task.id === BOARD_CENTER_TASK_ID) ??
-    sortedTasks.find((task) => task.free) ??
-    null;
+  const centerTask = sortedTasks.find((task) => task.free) ?? null;
   const nonFreeTasks = sortedTasks.filter(
     (task) => !task.free && task.id !== centerTask?.id,
   );
-  const hardTasks = nonFreeTasks.filter(
-    (task) => task.sortOrder >= HARD_GENERATED_SORT_ORDER_MIN,
-  );
-  const nonHardTasks = nonFreeTasks.filter(
-    (task) => task.sortOrder < HARD_GENERATED_SORT_ORDER_MIN,
-  );
-  const sharedTasks = nonHardTasks.slice(
+  const sharedTasks = nonFreeTasks.slice(
     0,
-    Math.min(SHARED_GENERATED_TASK_COUNT, nonHardTasks.length),
+    Math.min(DEFAULT_SHARED_BOARD_TASK_COUNT, nonFreeTasks.length),
   );
-  const variedPool = nonHardTasks.filter(
+  const variedPool = nonFreeTasks.filter(
     (task) => !sharedTasks.some((sharedTask) => sharedTask.id === task.id),
   );
 
   return groups.reduce<Record<string, string[]>>((boards, group) => {
     const boardTaskIds = Array.from({ length: BOARD_SLOT_COUNT }, () => "");
     const shuffledTasks = stableShuffleTasks(variedPool, group.id);
-    const shuffledHardTasks = stableShuffleTasks(hardTasks, `${group.id}:hard`);
-    const taskIds = [
+    const taskQueue = [
       ...sharedTasks.map((task) => task.id),
       ...shuffledTasks.map((task) => task.id),
-      ...nonHardTasks
-        .filter(
-          (task) =>
-            !sharedTasks.some((sharedTask) => sharedTask.id === task.id) &&
-            !shuffledTasks.some((shuffledTask) => shuffledTask.id === task.id),
-        )
-        .map((task) => task.id),
     ];
     let taskIndex = 0;
-    let hardTaskIndex = 0;
 
     boardTaskIds.forEach((_, index) => {
       const slotNumber = index + 1;
@@ -4997,16 +4968,7 @@ function generateGroupBoards(groups: Group[], tasks: Task[]) {
         return;
       }
 
-      if (
-        HARD_GENERATED_SLOT_NUMBERS.has(slotNumber) &&
-        hardTaskIndex < Math.min(HARD_GENERATED_TASK_COUNT, shuffledHardTasks.length)
-      ) {
-        boardTaskIds[index] = shuffledHardTasks[hardTaskIndex].id;
-        hardTaskIndex += 1;
-        return;
-      }
-
-      const nextTaskId = taskIds[taskIndex];
+      const nextTaskId = taskQueue[taskIndex];
 
       if (nextTaskId) {
         boardTaskIds[index] = nextTaskId;
@@ -5074,7 +5036,13 @@ function isAllowedProofImageFile(file: File) {
 }
 
 async function prepareProofImageFile(file: File) {
-  if (file.size <= MAX_PROOF_FILE_BYTES) {
+  const fileType = file.type.toLowerCase();
+  const needsBrowserSafeFormat =
+    fileType === "image/heic" ||
+    fileType === "image/heif" ||
+    /\.(heic|heif)$/i.test(file.name);
+
+  if (file.size <= MAX_PROOF_FILE_BYTES && !needsBrowserSafeFormat) {
     return file;
   }
 
@@ -5085,7 +5053,7 @@ async function prepareProofImageFile(file: File) {
   }
 
   throw new Error(
-    `Photo is still over ${MAX_PROOF_FILE_MB} MB after compression. Try a smaller photo.`,
+    `Photo is still over ${PROOF_MAX_FILE_LABEL} after compression. Try a smaller photo.`,
   );
 }
 
@@ -5145,7 +5113,7 @@ function loadImageFromFile(file: File) {
       URL.revokeObjectURL(objectUrl);
       reject(
         new Error(
-          `Photo is over ${MAX_PROOF_FILE_MB} MB and this browser could not compress it.`,
+          `Photo is over ${PROOF_MAX_FILE_LABEL} and this browser could not compress it.`,
         ),
       );
     };
@@ -5593,6 +5561,68 @@ function clearStoredPlayer() {
     window.localStorage.removeItem(STORAGE_PLAYER_KEY);
   } catch {
     // Local storage can be unavailable in private contexts.
+  }
+}
+
+function readInitialGameCode() {
+  return readGameCodeFromUrl() || readStoredGameCode();
+}
+
+function readGameCodeFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const queryGameCode =
+      params.get("code") ?? params.get("game") ?? params.get("room") ?? "";
+    const hashGameCode = window.location.hash
+      .replace(/^#\/?/, "")
+      .replace(/^code=/i, "");
+    const gameCode = normalizeGameCodeInput(queryGameCode || hashGameCode);
+
+    return isValidGameCode(gameCode) ? gameCode : "";
+  } catch {
+    return "";
+  }
+}
+
+function syncGameCodeToUrl(code: string) {
+  const gameCode = normalizeGameCodeInput(code);
+
+  if (!isValidGameCode(gameCode)) {
+    return;
+  }
+
+  try {
+    const url = new URL(window.location.href);
+
+    if (normalizeGameCodeInput(url.searchParams.get("code") ?? "") === gameCode) {
+      return;
+    }
+
+    url.searchParams.set("code", gameCode);
+    url.searchParams.delete("game");
+    url.searchParams.delete("room");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Ignore URL sync failures; local storage still preserves the room code.
+  }
+}
+
+function getPathWithGameCode(pathname: string, code: string) {
+  const gameCode = normalizeGameCodeInput(code);
+
+  if (!isValidGameCode(gameCode)) {
+    return pathname;
+  }
+
+  try {
+    const url = new URL(window.location.href);
+    url.pathname = pathname;
+    url.searchParams.set("code", gameCode);
+    url.searchParams.delete("game");
+    url.searchParams.delete("room");
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return pathname;
   }
 }
 

@@ -497,8 +497,8 @@ with seeded_game as (
   )
   values (
     '00000000-0000-4000-8000-000000000001',
-    'FAMILY',
-    'Scavenger Blackout',
+    'STARTER',
+    'Starter Scavenger Hunt',
     'live',
     true,
     1800
@@ -521,9 +521,9 @@ seeded_groups as (
   from seeded_game
   cross join (
     values
-      ('purple', 'Purple Team', 'Purple', 'purple', 1),
-      ('maroon', 'Maroon Team', 'Maroon', 'maroon', 2),
-      ('orange', 'Orange Team', 'Orange', 'orange', 3)
+      ('team-1', 'Team 1', 'Team 1', 'blue', 1),
+      ('team-2', 'Team 2', 'Team 2', 'green', 2),
+      ('team-3', 'Team 3', 'Team 3', 'gold', 3)
   ) as group_seed(slug, name, short_name, color_key, sort_order)
   on conflict (game_id, slug) do update set
     name = excluded.name,
@@ -547,9 +547,9 @@ seeded_stops as (
   from seeded_game
   cross join (
     values
-      ('00000000-0000-4000-8000-000000000101', 'riverside-pavilion', 'Riverside Pavilion', 'Regroup by the picnic tables before heading back out.', '10:30 AM', '11:00 AM', 1),
-      ('00000000-0000-4000-8000-000000000102', 'oak-trail-gate', 'Oak Trail Gate', 'Regroup by the trail sign before the next play round.', '11:30 AM', '12:15 PM', 2),
-      ('00000000-0000-4000-8000-000000000103', 'garden-steps', 'Garden Steps', 'Gather near the stairs before the next round starts.', '12:45 PM', '1:15 PM', 3)
+      ('00000000-0000-4000-8000-000000000101', 'opening-stop', 'Opening Stop', 'Regroup here before the first play window starts.', '10:30 AM', '11:00 AM', 1),
+      ('00000000-0000-4000-8000-000000000102', 'midpoint-stop', 'Midpoint Stop', 'Meet here before the next play window starts.', '11:30 AM', '12:15 PM', 2),
+      ('00000000-0000-4000-8000-000000000103', 'finish-stop', 'Finish Stop', 'Gather here to review proof photos and wrap the game.', '12:45 PM', '1:15 PM', 3)
   ) as stop_seed(id, slug, name, detail, arrive_time, leave_time, sort_order)
   on conflict (id) do update set
     name = excluded.name,
@@ -597,7 +597,7 @@ seeded_tasks as (
       ('cloud', 'Cloud', 'Take a photo of a cloud or a cloud-shaped object.', 'Cloud', false, 22),
       ('butterfly', 'Butterfly', 'Find a butterfly, bug, or insect detail.', 'Bug', false, 23),
       ('mailbox', 'Mailbox', 'Find a mailbox, message box, or posted note.', 'Mailbox', false, 24),
-      ('snack', 'Snack', 'Find a snack someone brought to the party.', 'Cookie', false, 25)
+      ('snack', 'Snack', 'Find a snack and take a photo.', 'Cookie', false, 25)
   ) as task_seed(slug, title, description, icon, is_free, sort_order)
   on conflict (game_id, slug) do update set
     title = excluded.title,

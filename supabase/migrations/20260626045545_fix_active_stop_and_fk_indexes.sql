@@ -14,7 +14,7 @@ update public.games g
 set active_stop_id = s.id,
     updated_at = now()
 from public.stops s
-where g.code = 'FAMILY'
+where g.code = 'STARTER'
   and s.game_id = g.id
-  and s.slug = 'riverside-pavilion'
+  and s.slug = 'opening-stop'
   and g.active_stop_id is null;
