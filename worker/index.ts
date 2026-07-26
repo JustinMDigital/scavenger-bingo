@@ -34,6 +34,7 @@ const MAX_PROOF_BYTES = 500 * 1024;
 const MAX_HOST_ATTEMPTS = 5;
 const HOST_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const ROOM_KEY = "room";
+const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -83,6 +84,7 @@ export default {
     headers.set("x-scavenger-session", sessionId);
     headers.set("x-scavenger-client", clientKey);
     headers.set("x-scavenger-room-code", code);
+    headers.set("x-scavenger-public-origin", getPublicOrigin(request));
     headers.delete("cookie");
 
     const roomId = env.GAME_ROOMS.idFromName(code);
@@ -221,6 +223,8 @@ export class GameRoom extends DurableObject<Env> {
       const code = normalizeGameCode(
         request.headers.get("x-scavenger-room-code") ?? codeFromPath(url.pathname),
       );
+      const publicOrigin =
+        request.headers.get("x-scavenger-public-origin") ?? url.origin;
 
       if (request.method === "GET" && url.pathname.endsWith("/ws")) {
         return this.openWebSocket(sessionId);
@@ -231,7 +235,7 @@ export class GameRoom extends DurableObject<Env> {
       }
 
       if (request.method === "GET") {
-        return this.getGameState(sessionId, url.origin);
+        return this.getGameState(sessionId, publicOrigin);
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/host")) {
@@ -243,11 +247,11 @@ export class GameRoom extends DurableObject<Env> {
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/proofs")) {
-        return await this.saveProof(request, sessionId, url.origin);
+        return await this.saveProof(request, sessionId, publicOrigin);
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/actions")) {
-        return await this.performAction(request, sessionId, url.origin);
+        return await this.performAction(request, sessionId, publicOrigin);
       }
 
       return json({ error: "Room route not found." }, 404);
@@ -1104,7 +1108,39 @@ function addSessionCookie(response: Response, sessionId: string, url: URL) {
 function isSameOriginMutation(request: Request) {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
   const origin = request.headers.get("origin");
-  return !origin || origin === new URL(request.url).origin;
+  return (
+    !origin ||
+    origin === new URL(request.url).origin ||
+    origin === PUBLIC_APP_ORIGIN
+  );
+}
+
+function getPublicOrigin(request: Request) {
+  const forwardedHost = request.headers
+    .get("x-forwarded-host")
+    ?.split(",")[0]
+    ?.trim()
+    .toLowerCase();
+  if (forwardedHost === new URL(PUBLIC_APP_ORIGIN).host) {
+    return PUBLIC_APP_ORIGIN;
+  }
+
+  if (request.headers.get("origin") === PUBLIC_APP_ORIGIN) {
+    return PUBLIC_APP_ORIGIN;
+  }
+
+  const referer = request.headers.get("referer");
+  if (referer) {
+    try {
+      if (new URL(referer).origin === PUBLIC_APP_ORIGIN) {
+        return PUBLIC_APP_ORIGIN;
+      }
+    } catch {
+      // Ignore malformed proxy headers and use the request URL.
+    }
+  }
+
+  return new URL(request.url).origin;
 }
 
 async function getClientKey(request: Request) {

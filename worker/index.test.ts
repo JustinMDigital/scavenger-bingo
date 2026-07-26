@@ -4,6 +4,7 @@ import { GAME_KITS } from "../src/gameKits";
 import { createStarterRoom, upgradeRoom } from "./model";
 
 const ORIGIN = "https://example.com";
+const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
 const HOST_COOKIE = "scavenger_session=host-session-00000000000001";
 const PLAYER_COOKIE = "scavenger_session=player-session-000000000001";
 const OTHER_COOKIE = "scavenger_session=other-session-0000000000001";
@@ -210,6 +211,22 @@ describe("Cloudflare game room", () => {
       },
     );
     expect(crossSiteAction.status).toBe(403);
+
+    const trustedProxyOrigin = await SELF_FETCH(
+      `${ORIGIN}/api/games/NO-SUCH-ROOM/actions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: PUBLIC_APP_ORIGIN,
+        },
+        body: JSON.stringify({
+          action: "updateGame",
+          payload: {},
+        }),
+      },
+    );
+    expect(trustedProxyOrigin.status).toBe(404);
 
     function proofHeaders(taskId: string) {
       return {
