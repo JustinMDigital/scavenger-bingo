@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "https://scavenger-bingo.jusmarr.workers.dev/$1"
-    }
-  ]
-}
