@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/"
+      "destination": "https://scavenger-bingo.jusmarr.workers.dev/$1"
     }
   ]
 }
