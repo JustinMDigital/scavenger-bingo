@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   Armchair,
   Badge,
   Bike,
@@ -48,7 +49,9 @@ import {
   Route,
   Sailboat,
   School,
+  Search,
   Send,
+  Settings2,
   Ship,
   Shirt,
   Signpost,
@@ -85,6 +88,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { GAME_KITS, getGameKit } from "./gameKits";
+import type { GameKit, GameKitId } from "./gameKits";
 import {
   abandonGameLobby,
   addGroup as createGroup,
@@ -137,6 +142,7 @@ import type {
   TimerMode,
 } from "./gameService";
 import type { PendingProofUpload } from "./pendingProofStore";
+import { PlayerSlidesExport } from "./PlayerSlidesExport";
 
 type BoardView = "grid" | "list";
 
@@ -175,6 +181,12 @@ type HostClaimRequest = {
   displayName: string;
   gameCode: string;
   pin: string;
+  templateId?: GameKit["id"];
+};
+
+type TemplateRoute = {
+  scope: "public" | "host";
+  templateId?: string;
 };
 
 type LocalGamePatch = Partial<
@@ -237,6 +249,7 @@ const ICONS: Record<string, LucideIcon> = {
   CupSoda,
   Dog,
   Droplets,
+  Eye,
   FerrisWheel,
   Fish,
   Flag,
@@ -250,6 +263,7 @@ const ICONS: Record<string, LucideIcon> = {
   Hash,
   HeartHandshake,
   IceCreamBowl,
+  Image,
   Landmark,
   Leaf,
   Mailbox,
@@ -287,7 +301,9 @@ export default function App() {
   const storedPlayer = useMemo(() => readStoredPlayer(), []);
   const initialGameCode = useMemo(() => readInitialGameCode(), []);
   const [path, setPath] = useState(() => window.location.pathname);
-  const isHostRoute = path === "/host";
+  const isHostRoute = path === "/host" || path.startsWith("/host/");
+  const templateRoute = getTemplateRoute(path);
+  const selectedCreationTemplate = getGameKit(readTemplateIdFromUrl());
   const [gameCode, setGameCode] = useState(initialGameCode);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [isLoading, setIsLoading] = useState(initialGameCode.length > 0);
@@ -376,6 +392,12 @@ export default function App() {
   function goToHostView() {
     window.history.pushState({}, "", getPathWithGameCode("/host", gameCode));
     setPath("/host");
+  }
+
+  function navigateTo(href: string) {
+    window.history.pushState({}, "", href);
+    setPath(new URL(href, window.location.href).pathname);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   useEffect(() => {
@@ -895,7 +917,13 @@ export default function App() {
     try {
       await updateSubmissionStatus(submissionId, status);
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast(status === "approved" ? "Approved" : "Retake requested");
+      setToast(
+        status === "approved"
+          ? "Marked approved"
+          : status === "pending"
+            ? "Marked submitted"
+            : "Retake requested",
+      );
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Review update failed");
@@ -989,7 +1017,7 @@ export default function App() {
   }
 
   async function handleConfigureGame(
-    template?: "classic" | "quick" | "free-for-all" | "custom",
+    template?: GameKitId,
     config?: Parameters<typeof configureGame>[0]["config"],
     startTime?: string,
   ) {
@@ -1492,6 +1520,32 @@ export default function App() {
     );
   }
 
+  async function handleUseRoomTemplate(templateId: GameKit["id"]) {
+    if (!gameState || membership?.role !== "host") {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Replace this room’s current rules, teams, tasks, and boards with this template? This cannot be undone.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    const applied = await handleConfigureGame(templateId);
+    if (applied) {
+      navigateTo(getPathWithGameCode("/host", gameState.game.code));
+    }
+  }
+
+  if (templateRoute?.scope === "public") {
+    return (
+      <TemplateLibraryPage
+        route={templateRoute}
+      />
+    );
+  }
+
   if (isLoading && !gameState) {
     return (
       <LoadingView
@@ -1513,6 +1567,7 @@ export default function App() {
           defaultGameCode={gameCode}
           error={error}
           isBusy={isLoading}
+          selectedTemplate={selectedCreationTemplate}
           statusMessage={toast}
           onClaim={handleClaimHost}
         />
@@ -1553,6 +1608,22 @@ export default function App() {
     timerSeconds,
     routeDisplay.timerSmall,
   );
+
+  if (
+    templateRoute?.scope === "host" &&
+    membership?.role === "host"
+  ) {
+    return (
+      <TemplateLibraryPage
+        context={{
+          canApply: !gameState.game.setupComplete && gameState.game.phase === "review",
+          gameCode: gameState.game.code,
+          onApply: handleUseRoomTemplate,
+        }}
+        route={templateRoute}
+      />
+    );
+  }
 
   const cssVars = {
     "--primary": isHostRoute ? "oklch(0.49 0.22 262)" : currentGroup?.color,
@@ -1896,6 +1967,7 @@ function HostSetupView({
   defaultGameCode,
   error,
   isBusy,
+  selectedTemplate,
   statusMessage,
   onClaim,
 }: {
@@ -1903,6 +1975,7 @@ function HostSetupView({
   defaultGameCode: string;
   error: string;
   isBusy: boolean;
+  selectedTemplate?: GameKit;
   statusMessage: string;
   onClaim: (request: HostClaimRequest) => void;
 }) {
@@ -1914,11 +1987,6 @@ function HostSetupView({
         </span>
         <span>Scavenger Blackout</span>
       </a>
-      {error && (
-        <div className="toast-region error-message" role="alert">
-          {error}
-        </div>
-      )}
       {statusMessage && (
         <div className="toast-region" role="status" aria-live="polite">
           {statusMessage}
@@ -1927,7 +1995,9 @@ function HostSetupView({
       <HostGate
         defaultDisplayName={defaultDisplayName}
         defaultGameCode={defaultGameCode}
+        error={error}
         isBusy={isBusy}
+        selectedTemplate={selectedTemplate}
         onClaim={onClaim}
       />
       <a className="entry-back-link" href="/">
@@ -2009,12 +2079,341 @@ function GameCodeGate({
       <section className="landing-host" aria-labelledby="host-callout-title">
         <div>
           <h2 id="host-callout-title">Want to run the hunt?</h2>
-          <p>Create a room, build the tasks, choose teams, and share the code.</p>
+          <p>Choose a ready-made game or build your own, then share the room code.</p>
         </div>
-        <a className="landing-host-link" href="/host">
-          <Plus aria-hidden="true" />
-          Create a hunt
+        <div className="landing-host-actions">
+          <a className="landing-template-link" href="/templates">
+            <Grid3X3 aria-hidden="true" />
+            Browse templates
+          </a>
+          <a className="landing-host-link" href="/host">
+            <Plus aria-hidden="true" />
+            Create blank
+          </a>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function TemplateLibraryPage({
+  context,
+  route,
+}: {
+  context?: {
+    canApply: boolean;
+    gameCode: string;
+    onApply: (templateId: GameKit["id"]) => void;
+  };
+  route: TemplateRoute;
+}) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("All");
+  const catalogPath = context
+    ? getPathWithGameCode("/host/templates", context.gameCode)
+    : "/templates";
+  const backPath = context
+    ? getPathWithGameCode("/host", context.gameCode)
+    : "/";
+  const selectedTemplate = route.templateId
+    ? getGameKit(route.templateId)
+    : undefined;
+
+  if (route.templateId) {
+    return (
+      <TemplateDetailPage
+        catalogPath={catalogPath}
+        context={context}
+        template={selectedTemplate}
+      />
+    );
+  }
+
+  const categories = [
+    "All",
+    ...Array.from(new Set(GAME_KITS.map((kit) => kit.category))),
+  ];
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredTemplates = GAME_KITS.filter((kit) => {
+    const matchesCategory = category === "All" || kit.category === category;
+    const searchableText = [
+      kit.name,
+      kit.gameName,
+      kit.category,
+      kit.setting,
+      kit.ageLabel,
+      kit.summary,
+      kit.detail,
+      ...kit.searchTags,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return matchesCategory && (!normalizedQuery || searchableText.includes(normalizedQuery));
+  });
+
+  return (
+    <main className="template-library-page">
+      <header className="template-library-header">
+        <a className="template-back-link" href={backPath}>
+          <ArrowLeft aria-hidden="true" />
+          {context ? `Back to room ${context.gameCode}` : "Back home"}
         </a>
+        <a className="template-library-brand" href="/">
+          <span aria-hidden="true"><Grid3X3 /></span>
+          Scavenger Blackout
+        </a>
+      </header>
+
+      <section className="template-library-hero" aria-labelledby="template-library-title">
+        <p className="label">{context ? "Choose for this room" : "Game templates"}</p>
+        <h1 id="template-library-title">Pick a hunt that fits the moment.</h1>
+        <p>
+          Preview the tasks and rules first. Every template becomes an editable
+          copy in your room.
+        </p>
+      </section>
+
+      <section className="template-library-tools" aria-label="Find a template">
+        <label className="template-search">
+          <Search aria-hidden="true" />
+          <span className="sr-only">Search templates</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by occasion, place, or group"
+          />
+        </label>
+        <div className="template-categories" aria-label="Template categories">
+          {categories.map((item) => (
+            <button
+              key={item}
+              aria-pressed={category === item}
+              className={category === item ? "is-active" : ""}
+              type="button"
+              onClick={() => setCategory(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section aria-live="polite" aria-label="Template results">
+        <div className="template-results-heading">
+          <strong>
+            {filteredTemplates.length === 1
+              ? "1 template"
+              : `${filteredTemplates.length} templates`}
+          </strong>
+          <span>{query ? `Matching “${query.trim()}”` : "Curated and ready to edit"}</span>
+        </div>
+
+        {filteredTemplates.length > 0 ? (
+          <div className="template-catalog-grid">
+            {filteredTemplates.map((kit) => {
+              const detailPath = context
+                ? getPathWithGameCode(`/host/templates/${kit.id}`, context.gameCode)
+                : `/templates/${kit.id}`;
+
+              return (
+                <a
+                  className={kit.featured ? "template-catalog-card is-featured" : "template-catalog-card"}
+                  href={detailPath}
+                  key={kit.id}
+                >
+                  <div className="template-card-board" aria-hidden="true">
+                    {Array.from({ length: 9 }, (_, index) => (
+                      <span key={index}>
+                        {index === 4 ? <Star /> : <Grid3X3 />}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="template-card-copy">
+                    <div className="template-card-topline">
+                      <span>{kit.category}</span>
+                      {kit.featured && <em>Featured</em>}
+                    </div>
+                    <h2>{kit.name}</h2>
+                    <p>{kit.summary}</p>
+                    <div className="template-card-facts">
+                      <span>{kit.playerLabel}</span>
+                      <span>{kit.durationLabel}</span>
+                      <span>{kit.boardSize}×{kit.boardSize}</span>
+                    </div>
+                  </div>
+                  <span className="template-card-open">Open template</span>
+                </a>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="template-empty-state">
+            <Search aria-hidden="true" />
+            <strong>No templates match that search.</strong>
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setCategory("All");
+              }}
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function TemplateDetailPage({
+  catalogPath,
+  context,
+  template,
+}: {
+  catalogPath: string;
+  context?: {
+    canApply: boolean;
+    gameCode: string;
+    onApply: (templateId: GameKit["id"]) => void;
+  };
+  template?: GameKit;
+}) {
+  if (!template) {
+    return (
+      <main className="template-library-page">
+        <header className="template-library-header">
+          <a className="template-back-link" href={catalogPath}>
+            <ArrowLeft aria-hidden="true" />
+            All templates
+          </a>
+        </header>
+        <section className="template-empty-state is-page">
+          <Grid3X3 aria-hidden="true" />
+          <h1>Template not found.</h1>
+          <p>This template may have moved or is not part of the curated library.</p>
+          <a href={catalogPath}>Browse all templates</a>
+        </section>
+      </main>
+    );
+  }
+
+  const taskCount = template.tasks?.length ?? 42;
+  const creationHref = `/host?template=${encodeURIComponent(template.id)}`;
+
+  return (
+    <main className="template-library-page template-detail-page">
+      <header className="template-library-header">
+        <a className="template-back-link" href={catalogPath}>
+          <ArrowLeft aria-hidden="true" />
+          All templates
+        </a>
+        <a className="template-library-brand" href="/">
+          <span aria-hidden="true"><Grid3X3 /></span>
+          Scavenger Blackout
+        </a>
+      </header>
+
+      <section className="template-detail-hero">
+        <div className="template-detail-copy">
+          <p className="label">{template.category}</p>
+          <h1>{template.name}</h1>
+          <p className="template-detail-summary">{template.summary}</p>
+          <p>{template.detail}</p>
+          <div className="template-detail-actions">
+            {context?.canApply ? (
+              <button
+                className="primary-action"
+                type="button"
+                onClick={() => context.onApply(template.id)}
+              >
+                <Play aria-hidden="true" />
+                Use in room {context.gameCode}
+              </button>
+            ) : (
+              <a className="primary-action" href={creationHref}>
+                <Play aria-hidden="true" />
+                {context ? "Start in a new room" : "Start with this template"}
+              </a>
+            )}
+            <a className="secondary-action" href={catalogPath}>
+              Keep browsing
+            </a>
+          </div>
+          {context && (
+            <p className={context.canApply ? "template-replace-note" : "template-replace-note is-locked"}>
+              {context.canApply
+                ? "Using this will replace the room’s current rules, teams, tasks, and boards after confirmation."
+                : "This hunt has already started. Its setup is protected, so this template must use a new room."}
+            </p>
+          )}
+        </div>
+
+        <div
+          className="template-detail-board"
+          aria-label={`${template.boardSize} by ${template.boardSize} board preview`}
+          style={{ "--template-board-size": template.boardSize } as React.CSSProperties}
+        >
+          {Array.from(
+            { length: template.boardSize * template.boardSize },
+            (_, index) => {
+              const task = template.tasks?.[index];
+              const Icon = task ? ICONS[task.icon] ?? Grid3X3 : index === Math.floor((template.boardSize * template.boardSize) / 2) ? Star : Grid3X3;
+              return (
+                <span key={task?.id ?? index}>
+                  <Icon aria-hidden="true" />
+                  <small>{task?.title ?? (index === 0 ? "Your tasks" : "")}</small>
+                </span>
+              );
+            },
+          )}
+        </div>
+      </section>
+
+      <section className="template-fact-grid" aria-label="Template details">
+        <div><span>Players</span><strong>{template.playerLabel}</strong></div>
+        <div><span>Time</span><strong>{template.durationLabel}</strong></div>
+        <div><span>Setting</span><strong>{template.setting}</strong></div>
+        <div><span>Best for</span><strong>{template.ageLabel}</strong></div>
+        <div><span>Board</span><strong>{template.boardSize}×{template.boardSize} {template.winCondition}</strong></div>
+        <div><span>Task pool</span><strong>{taskCount} editable tasks</strong></div>
+      </section>
+
+      <section className="template-task-section" aria-labelledby="template-tasks-title">
+        <div>
+          <p className="label">Inside the template</p>
+          <h2 id="template-tasks-title">Preview the challenges.</h2>
+          <p>
+            {template.tasks
+              ? "These prompts are copied into your room, where you can rewrite, remove, or add anything."
+              : "This flexible template starts with the full 42-task general challenge pool, ready to edit in room setup."}
+          </p>
+        </div>
+        {template.tasks ? (
+          <div className="template-task-list">
+            {template.tasks.map((task) => {
+              const Icon = ICONS[task.icon] ?? Grid3X3;
+              return (
+                <article key={task.id}>
+                  <span aria-hidden="true"><Icon /></span>
+                  <div>
+                    <strong>{task.title}</strong>
+                    <p>{task.description}</p>
+                  </div>
+                  {task.free && <em>Free</em>}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="template-generic-pool">
+            <Grid3X3 aria-hidden="true" />
+            <strong>42 general challenges</strong>
+            <span>Photo prompts, observation tasks, team moments, and a free space where the board allows it.</span>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -2318,12 +2717,16 @@ function JoinView({
 function HostGate({
   defaultDisplayName,
   defaultGameCode,
+  error,
   isBusy,
+  selectedTemplate,
   onClaim,
 }: {
   defaultDisplayName: string;
   defaultGameCode: string;
+  error?: string;
   isBusy: boolean;
+  selectedTemplate?: GameKit;
   onClaim: (request: HostClaimRequest) => void;
 }) {
   const [displayName, setDisplayName] = useState(defaultDisplayName || "Host");
@@ -2335,35 +2738,67 @@ function HostGate({
     const cleanName = displayName.trim();
     const cleanGameCode = gameCode.trim();
 
-    if (!cleanName || !cleanGameCode || !pin.trim()) {
+    if (
+      !cleanName ||
+      !isValidGameCode(normalizeGameCodeInput(cleanGameCode)) ||
+      pin.trim().length < 4
+    ) {
       return;
     }
 
-    onClaim({ displayName: cleanName, gameCode: cleanGameCode, pin });
+    onClaim({
+      displayName: cleanName,
+      gameCode: cleanGameCode,
+      pin,
+      ...(selectedTemplate ? { templateId: selectedTemplate.id } : {}),
+    });
   }
 
   return (
     <section className="welcome-card host-gate" aria-labelledby="host-title">
       <div>
-        <p className="label">Host a hunt</p>
-        <h2 id="host-title">Create the room, then build the hunt.</h2>
+        <p className="label">
+          {selectedTemplate ? "Start from a template" : "Host a hunt"}
+        </p>
+        <h2 id="host-title">
+          {selectedTemplate ? `Create ${selectedTemplate.name}.` : "Create or reopen a hunt."}
+        </h2>
         <p>
-          Choose a room code and private host PIN. Next you can edit tasks,
-          teams, stops, and boards before players begin.
+          {selectedTemplate
+            ? "Choose a new room code and private host PIN. You can review and edit everything before players join."
+            : "Choose a room code and private host PIN. If the room already exists, use the same PIN to reopen it."}
         </p>
       </div>
 
+      {selectedTemplate && (
+        <div className="selected-template-summary">
+          <div>
+            <strong>{selectedTemplate.name}</strong>
+            <span>{selectedTemplate.summary}</span>
+          </div>
+          <span>{selectedTemplate.boardSize}×{selectedTemplate.boardSize}</span>
+          <span>{selectedTemplate.durationLabel}</span>
+        </div>
+      )}
+
       <form className="join-form" onSubmit={handleSubmit}>
+        {error && (
+          <p className="entry-form-message is-error" role="alert">
+            {error}
+          </p>
+        )}
         <label className="field">
-          <span>Game code for players</span>
+          <span>Room code</span>
           <input
             autoCapitalize="characters"
             autoComplete="off"
+            aria-describedby="host-room-code-help"
             maxLength={24}
             value={gameCode}
             onChange={(event) => setGameCode(event.target.value.toUpperCase())}
             placeholder="FRIDAY-NIGHT"
           />
+          <small id="host-room-code-help">3–24 letters, numbers, or dashes.</small>
         </label>
         <label className="field">
           <span>Host name</span>
@@ -2378,6 +2813,7 @@ function HostGate({
           <span>PIN</span>
           <input
             autoComplete="one-time-code"
+            aria-describedby="host-pin-help"
             inputMode="numeric"
             minLength={4}
             maxLength={32}
@@ -2386,13 +2822,23 @@ function HostGate({
             onChange={(event) => setPin(event.target.value)}
             placeholder="4+ character PIN"
           />
+          <small id="host-pin-help">Keep this PIN—you’ll need it to host again.</small>
         </label>
         <button
           className="join-submit"
-          disabled={!displayName.trim() || !gameCode.trim() || !pin.trim() || isBusy}
+          disabled={
+            !displayName.trim() ||
+            !isValidGameCode(normalizeGameCodeInput(gameCode)) ||
+            pin.trim().length < 4 ||
+            isBusy
+          }
           type="submit"
         >
-          {isBusy ? "Opening hunt..." : "Create or open hunt"}
+          {isBusy
+            ? "Opening hunt..."
+            : selectedTemplate
+              ? "Create game from template"
+              : "Create or open hunt"}
         </button>
       </form>
     </section>
@@ -2557,6 +3003,16 @@ function GroupView({
             </div>
           )}
         </section>
+      )}
+
+      {!isBoardHidden && game.phase === "review" && hasTasks && (
+        <PlayerSlidesExport
+          game={game}
+          group={group}
+          roster={roster}
+          submissions={submissions}
+          tasks={tasks}
+        />
       )}
 
       {!isBoardHidden && selectedTask && !isTaskCardDismissed && (
@@ -2766,7 +3222,7 @@ function HostView({
   abandonGame: () => void;
   boardAssignments: BoardAssignment[];
   configure: (
-    template?: "classic" | "quick" | "free-for-all" | "custom",
+    template?: GameKitId,
     config?: Parameters<typeof configureGame>[0]["config"],
     startTime?: string,
   ) => Promise<boolean>;
@@ -2827,7 +3283,7 @@ function HostView({
   const selectedGroup =
     scoreGroups.find((group) => group.id === selectedHostGroupId) ?? null;
   const boardsLocked = submissions.length > 0;
-  const [hostArea, setHostArea] = useState<"setup" | "run" | "manage">(
+  const [hostArea, setHostArea] = useState<"lobby" | "setup" | "run" | "manage">(
     game.setupComplete ? "run" : "setup",
   );
   const [setupStep, setSetupStep] = useState<"game" | "teams" | "boards" | "route">(
@@ -2843,6 +3299,10 @@ function HostView({
         getGroupBoardTasks(group.id, tasks, boardAssignments).length ===
         boardSlotCount,
     );
+  const setupReady =
+    boardsReady &&
+    (game.playMode === "individual" || groups.length > 0) &&
+    (game.timerMode !== "schedule" || stops.length > 0);
 
   useEffect(() => {
     if (game.setupComplete) {
@@ -2892,15 +3352,28 @@ function HostView({
           type="button"
           onClick={() => setHostArea("setup")}
         >
-          Set up
+          <Grid3X3 aria-hidden="true" />
+          <span>Setup</span>
+        </button>
+        <button
+          aria-current={hostArea === "lobby" ? "page" : undefined}
+          className={hostArea === "lobby" ? "is-active" : ""}
+          type="button"
+          onClick={() => setHostArea("lobby")}
+        >
+          <Users aria-hidden="true" />
+          <span>Invite</span>
         </button>
         <button
           aria-current={hostArea === "run" ? "page" : undefined}
           className={hostArea === "run" ? "is-active" : ""}
+          disabled={!game.setupComplete}
+          title={game.setupComplete ? undefined : "Start the game from Invite before opening live controls"}
           type="button"
           onClick={() => setHostArea("run")}
         >
-          Run hunt
+          <Play aria-hidden="true" />
+          <span>Live</span>
         </button>
         <button
           aria-current={hostArea === "manage" ? "page" : undefined}
@@ -2908,9 +3381,27 @@ function HostView({
           type="button"
           onClick={() => setHostArea("manage")}
         >
-          Manage
+          <Settings2 aria-hidden="true" />
+          <span>Room</span>
         </button>
       </nav>
+
+      {hostArea === "lobby" && (
+        <HostLobbyScreen
+          canStart={
+            memberships.some((item) => item.role === "player") &&
+            setupReady
+          }
+          game={game}
+          groups={groups}
+          isConfigured={setupReady}
+          memberships={memberships}
+          onOpenRun={() => setHostArea("run")}
+          onOpenSetup={() => setHostArea("setup")}
+          onStartGame={startGame}
+          onToggleLobby={(lobbyOpen) => updateRoom({ lobbyOpen })}
+        />
+      )}
 
       {hostArea === "setup" && (
         <>
@@ -2918,7 +3409,7 @@ function HostView({
             <div>
               <p className="label">Before players begin</p>
               <h2 id="setup-heading">Build the hunt one step at a time.</h2>
-              <p>Choose how people play, prepare the boards, then set the timing.</p>
+              <p>Choose how people play, prepare the boards, set the timing, then open the lobby.</p>
             </div>
             <ol className="host-setup-steps">
               {setupSteps.map((step, index) => (
@@ -2949,6 +3440,7 @@ function HostView({
             <GameSettingsPanel
               game={game}
               boardsLocked={boardsLocked}
+              browseTemplatesHref={getPathWithGameCode("/host/templates", game.code)}
               onConfigure={configure}
               onNext={() => setSetupStep(game.playMode === "teams" ? "teams" : "boards")}
             />
@@ -3033,7 +3525,7 @@ function HostView({
                   type="button"
                   onClick={() => setSetupStep("route")}
                 >
-                  Next: plan the route
+                  {game.timerMode === "schedule" ? "Next: plan the route" : "Next: confirm timing"}
                 </button>
               </div>
             </section>
@@ -3045,7 +3537,7 @@ function HostView({
                 <div>
                   <p className="label">Step 4</p>
                   <h2 id="setup-route-heading">
-                    {game.timerMode === "schedule" ? "Plan the route" : "Ready to start"}
+                    {game.timerMode === "schedule" ? "Plan the route" : "Ready for players"}
                   </h2>
                   <p>
                     {game.timerMode === "schedule"
@@ -3055,7 +3547,15 @@ function HostView({
                         : "This game has no countdown. The host decides when it ends."}
                   </p>
                 </div>
-                <span>{stops.length === 1 ? "1 stop" : `${stops.length} stops`}</span>
+                <span>
+                  {game.timerMode === "none"
+                    ? "No timer"
+                    : game.timerMode === "duration"
+                      ? `${game.timerDurationMinutes} minutes`
+                      : stops.length === 1
+                        ? "1 stop"
+                        : `${stops.length} stops`}
+                </span>
               </div>
               {game.timerMode === "schedule" && <div className="stop-editor-list">
                 {stops.map((stop, index) => (
@@ -3093,10 +3593,13 @@ function HostView({
                   className="primary-action"
                   type="button"
                   disabled={!boardsReady || (game.playMode === "teams" && groups.length === 0) || (game.timerMode === "schedule" && stops.length === 0)}
-                  onClick={startGame}
+                  onClick={() => {
+                    updateRoom({ lobbyOpen: true });
+                    setHostArea("lobby");
+                  }}
                 >
-                  <Play aria-hidden="true" />
-                  Start the hunt
+                  <Users aria-hidden="true" />
+                  Open the join screen
                 </button>
               </div>
             </section>
@@ -3197,7 +3700,7 @@ function HostView({
                 <p className="label">Live progress</p>
                 <h2 id="teams-heading">Check in on teams</h2>
               </div>
-              <span>{pendingCount} pending</span>
+              <span>{pendingCount} submitted</span>
             </div>
             <div className="team-cards">
               {scoreGroups.map((group) => (
@@ -3321,18 +3824,145 @@ function HostView({
   );
 }
 
-function PlayerInviteCard({ gameCode }: { gameCode: string }) {
+function HostLobbyScreen({
+  canStart,
+  game,
+  groups,
+  isConfigured,
+  memberships,
+  onOpenRun,
+  onOpenSetup,
+  onStartGame,
+  onToggleLobby,
+}: {
+  canStart: boolean;
+  game: Game;
+  groups: Group[];
+  isConfigured: boolean;
+  memberships: Membership[];
+  onOpenRun: () => void;
+  onOpenSetup: () => void;
+  onStartGame: () => void;
+  onToggleLobby: (lobbyOpen: boolean) => void;
+}) {
+  const players = memberships.filter((item) => item.role === "player");
+  const playerUrl = getPlayerJoinUrl(game.code);
+
+  return (
+    <section className="host-lobby-screen" aria-labelledby="host-lobby-title">
+      <div className="host-lobby-join-panel">
+        <div className="host-lobby-heading">
+          <h2 id="host-lobby-title">Join the game</h2>
+          <p>Scan the QR code or enter the room code on your phone.</p>
+        </div>
+
+        <div className="host-lobby-join-grid">
+          <JoinQrCode gameCode={game.code} size={280} />
+          <div className="host-lobby-code-block">
+            <span>Room code</span>
+            <strong>{game.code}</strong>
+            <small>{window.location.host}</small>
+            <button
+              className="host-lobby-copy"
+              type="button"
+              onClick={() => void navigator.clipboard.writeText(playerUrl)}
+            >
+              Copy join link
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="host-lobby-roster-panel">
+        <div className="host-lobby-roster-heading">
+          <div>
+            <h3>{players.length === 0 ? "Waiting for players" : `${players.length} ${players.length === 1 ? "player" : "players"} joined`}</h3>
+            <p>Names appear here automatically as people join.</p>
+          </div>
+          <span className={game.lobbyOpen ? "lobby-status is-open" : "lobby-status"}>
+            {game.lobbyOpen ? "Lobby open" : "Lobby closed"}
+          </span>
+        </div>
+
+        {players.length > 0 ? (
+          <div className="host-lobby-player-grid" aria-live="polite">
+            {players.map((player, index) => {
+              const group = groups.find((item) => item.id === player.groupId) ?? null;
+              return (
+                <div
+                  className="host-lobby-player"
+                  key={player.id}
+                  style={{
+                    "--group-color": group?.color ?? createPlayerGroup(player, index).color,
+                    "--join-index": index,
+                  } as React.CSSProperties}
+                >
+                  <span aria-hidden="true">{player.displayName.slice(0, 1).toUpperCase()}</span>
+                  <div>
+                    <strong>{player.displayName}</strong>
+                    {group && <small>{group.shortName}</small>}
+                  </div>
+                  <Check aria-label="Joined" />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="host-lobby-empty">
+            <Users aria-hidden="true" />
+            <strong>No one has joined yet</strong>
+            <span>Keep this screen visible while everyone checks in.</span>
+          </div>
+        )}
+
+        <div className="host-lobby-actions">
+          <button className="secondary-action" type="button" onClick={() => onToggleLobby(!game.lobbyOpen)}>
+            {game.lobbyOpen ? <Lock aria-hidden="true" /> : <Users aria-hidden="true" />}
+            {game.lobbyOpen ? "Close lobby" : "Open lobby"}
+          </button>
+          {game.setupComplete ? (
+            <button className="primary-action" type="button" onClick={onOpenRun}>
+              <Play aria-hidden="true" />
+              Open game controls
+            </button>
+          ) : canStart ? (
+            <button className="primary-action" type="button" onClick={onStartGame}>
+              <Play aria-hidden="true" />
+              Start game
+            </button>
+          ) : isConfigured ? (
+            <button className="primary-action" disabled type="button">
+              Waiting for players
+            </button>
+          ) : (
+            <button className="primary-action" type="button" onClick={onOpenSetup}>
+              Continue setup
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function JoinQrCode({ gameCode, size }: { gameCode: string; size: number }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const playerUrl = `${window.location.origin}/?code=${encodeURIComponent(gameCode)}`;
+  const playerUrl = getPlayerJoinUrl(gameCode);
 
   useEffect(() => {
     if (!canvasRef.current) return;
     void toCanvas(canvasRef.current, playerUrl, {
-      width: 148,
+      width: size,
       margin: 1,
       color: { dark: "#15171c", light: "#ffffff" },
     });
-  }, [playerUrl]);
+  }, [playerUrl, size]);
+
+  return <canvas className="join-qr-code" ref={canvasRef} aria-label={`QR code to join room ${gameCode}`} />;
+}
+
+function PlayerInviteCard({ gameCode }: { gameCode: string }) {
+  const playerUrl = getPlayerJoinUrl(gameCode);
 
   return (
     <div className="room-management-card invite-card">
@@ -3342,7 +3972,7 @@ function PlayerInviteCard({ gameCode }: { gameCode: string }) {
         <span>{playerUrl}</span>
         <button className="secondary-action" type="button" onClick={() => void navigator.clipboard.writeText(playerUrl)}>Copy player link</button>
       </div>
-      <canvas ref={canvasRef} aria-label={`QR code to join room ${gameCode}`} />
+      <JoinQrCode gameCode={gameCode} size={148} />
     </div>
   );
 }
@@ -3350,13 +3980,15 @@ function PlayerInviteCard({ gameCode }: { gameCode: string }) {
 function GameSettingsPanel({
   game,
   boardsLocked,
+  browseTemplatesHref,
   onConfigure,
   onNext,
 }: {
   game: Game;
   boardsLocked: boolean;
+  browseTemplatesHref: string;
   onConfigure: (
-    template?: "classic" | "quick" | "free-for-all" | "custom",
+    template?: GameKitId,
     config?: Parameters<typeof configureGame>[0]["config"],
     startTime?: string,
   ) => Promise<boolean>;
@@ -3392,12 +4024,6 @@ function GameSettingsPanel({
     });
   }, [game]);
 
-  async function applyTemplate(template: "classic" | "quick" | "free-for-all" | "custom") {
-    setIsSaving(true);
-    await onConfigure(template, undefined, template === "classic" ? startTime : undefined);
-    setIsSaving(false);
-  }
-
   async function saveCustom() {
     setIsSaving(true);
     const saved = await onConfigure(undefined, draft);
@@ -3410,27 +4036,33 @@ function GameSettingsPanel({
       <div className="host-step-heading">
         <div>
           <p className="label">Step 1</p>
-          <h2 id="setup-game-heading">Choose how this game works</h2>
-          <p>Start with a preset or adjust every option below.</p>
+          <h2 id="setup-game-heading">Set up the game</h2>
+          <p>Fine-tune this room here, or open the separate template library.</p>
         </div>
         <span>{boardsLocked ? "Format locked" : "Flexible setup"}</span>
       </div>
 
-      <div className="game-template-grid">
-        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("classic")}>
-          <strong>Classic event</strong><span>3 teams · 5×5 blackout · scheduled stops</span>
-        </button>
-        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("quick")}>
-          <strong>Quick bingo</strong><span>2 teams · 3×3 bingo · 30 minutes</span>
-        </button>
-        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("free-for-all")}>
-          <strong>Free-for-all</strong><span>Personal 4×4 boards · 45 minutes</span>
-        </button>
-        <button disabled={isSaving || boardsLocked} type="button" onClick={() => applyTemplate("custom")}>
-          <strong>Blank custom game</strong><span>Choose teams, board, proof, and timing</span>
-        </button>
+      <div className="template-library-entry">
+        <div>
+          <span aria-hidden="true"><Grid3X3 /></span>
+          <div>
+            <strong>Start with a ready-made hunt</strong>
+            <p>Search the library, preview every challenge, then bring one back to this room.</p>
+          </div>
+        </div>
+        {boardsLocked || game.setupComplete ? (
+          <span className="template-library-entry-status">Start a new room to change templates</span>
+        ) : (
+          <a className="secondary-action" href={browseTemplatesHref}>
+            Browse templates
+          </a>
+        )}
       </div>
 
+      <div className="custom-settings-heading">
+        <strong>Fine-tune this room</strong>
+        <span>Templates are copied into your room, so every setting remains editable.</span>
+      </div>
       <div className="game-settings-grid">
         <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
         <label className="field"><span>Players</span><select value={draft.playMode} onChange={(event) => setDraft({ ...draft, playMode: event.target.value as Game["playMode"] })}><option value="teams">Teams</option><option value="individual">Free-for-all</option></select></label>
@@ -4842,7 +5474,11 @@ function TeamCard({
         <span>/{tasks.length}</span>
       </span>
       <span className="progress-track" aria-hidden="true">
-        <span style={{ width: `${tasks.length ? (sentCount / tasks.length) * 100 : 0}%` }} />
+        <span
+          style={{
+            transform: `scaleX(${tasks.length ? sentCount / tasks.length : 0})`,
+          }}
+        />
       </span>
       <p>{submittedCount} submitted</p>
     </button>
@@ -4923,7 +5559,7 @@ function HostLiveBoard({
           </span>
           <span>
             <strong>{pendingCount}</strong>
-            pending
+            submitted
           </span>
         </div>
         <div className="blackout-board host-board-grid" style={{ "--board-size": boardSize } as React.CSSProperties}>
@@ -4953,7 +5589,12 @@ function HostLiveBoard({
         <ProofLightbox
           group={group}
           onClose={() => setLightboxSubmissionId(null)}
-          onApprove={() => setSubmissionStatus(lightboxSubmission.id, "approved")}
+          onToggleApproval={() =>
+            setSubmissionStatus(
+              lightboxSubmission.id,
+              getToggledApprovalStatus(lightboxSubmission.status),
+            )
+          }
           submission={lightboxSubmission}
           task={lightboxTask}
         />
@@ -5128,6 +5769,7 @@ function ProofList({
               key={submission.id}
               className={[
                 "proof-item",
+                submission.status === "pending" ? "is-submitted" : "",
                 submission.status === "approved" ? "is-approved" : "",
                 submission.status === "retake" ? "is-retake" : "",
               ]
@@ -5154,13 +5796,26 @@ function ProofList({
               {huntPhase === "review" ? (
                 <div className="proof-actions">
                   <button
-                    className="approve-button"
-                    disabled={submission.status === "approved"}
+                    aria-pressed={submission.status === "approved"}
+                    className={
+                      submission.status === "pending"
+                        ? "approve-button is-submitted"
+                        : "approve-button"
+                    }
                     type="button"
-                    onClick={() => setSubmissionStatus(submission.id, "approved")}
+                    onClick={() =>
+                      setSubmissionStatus(
+                        submission.id,
+                        getToggledApprovalStatus(submission.status),
+                      )
+                    }
                   >
-                    <Check aria-hidden="true" />
-                    Approve
+                    {submission.status === "pending" ? (
+                      <Send aria-hidden="true" />
+                    ) : (
+                      <Check aria-hidden="true" />
+                    )}
+                    {getApprovalToggleLabel(submission.status)}
                   </button>
                   <button
                     className="retake-button"
@@ -5174,8 +5829,8 @@ function ProofList({
                 </div>
               ) : (
                 <span className="received-pill">
-                  <Image aria-hidden="true" />
-                  Received
+                  <Send aria-hidden="true" />
+                  Submitted
                 </span>
               )}
             </article>
@@ -5187,7 +5842,12 @@ function ProofList({
         <ProofLightbox
           group={lightboxGroup}
           onClose={() => setLightboxSubmissionId(null)}
-          onApprove={() => setSubmissionStatus(lightboxSubmission.id, "approved")}
+          onToggleApproval={() =>
+            setSubmissionStatus(
+              lightboxSubmission.id,
+              getToggledApprovalStatus(lightboxSubmission.status),
+            )
+          }
           submission={lightboxSubmission}
           task={lightboxTask}
         />
@@ -5199,13 +5859,13 @@ function ProofList({
 function ProofLightbox({
   group,
   onClose,
-  onApprove,
+  onToggleApproval,
   submission,
   task,
 }: {
   group: Group;
   onClose: () => void;
-  onApprove?: () => void;
+  onToggleApproval?: () => void;
   submission: Submission;
   task: Task;
 }) {
@@ -5262,15 +5922,23 @@ function ProofLightbox({
           src={submission.imageUrl}
           alt={`${task.title} proof from ${group.shortName}`}
         />
-        {onApprove && (
+        {onToggleApproval && (
           <button
-            className="approve-button proof-lightbox-approve"
-            disabled={submission.status === "approved"}
+            aria-pressed={submission.status === "approved"}
+            className={
+              submission.status === "pending"
+                ? "approve-button is-submitted proof-lightbox-approve"
+                : "approve-button proof-lightbox-approve"
+            }
             type="button"
-            onClick={onApprove}
+            onClick={onToggleApproval}
           >
-            <Check aria-hidden="true" />
-            {submission.status === "approved" ? "Approved" : "Approve photo"}
+            {submission.status === "pending" ? (
+              <Send aria-hidden="true" />
+            ) : (
+              <Check aria-hidden="true" />
+            )}
+            {getApprovalToggleLabel(submission.status)}
           </button>
         )}
       </div>
@@ -5733,6 +6401,10 @@ function normalizeGameCodeInput(gameCode: string) {
   return gameCode.trim().toUpperCase();
 }
 
+function getPlayerJoinUrl(gameCode: string) {
+  return `${window.location.origin}/?code=${encodeURIComponent(gameCode)}`;
+}
+
 function isValidGameCode(gameCode: string) {
   return GAME_CODE_PATTERN.test(gameCode);
 }
@@ -5873,9 +6545,19 @@ function hasCompletedBingo(
 
 function getStatusLabel(status: TaskStatus) {
   if (status === "approved") return "Approved";
-  if (status === "pending") return "Sent";
+  if (status === "pending") return "Submitted";
   if (status === "retake") return "Retake";
   return "Ready";
+}
+
+function getToggledApprovalStatus(status: SubmissionStatus): SubmissionStatus {
+  return status === "approved" ? "pending" : "approved";
+}
+
+function getApprovalToggleLabel(status: SubmissionStatus) {
+  if (status === "approved") return "Approved";
+  if (status === "pending") return "Submitted";
+  return "Approve";
 }
 
 function getProofCountLabel(count: number) {
@@ -6065,7 +6747,7 @@ function getProofStateNote(
   }
 
   if (status === "pending") {
-    return "Photo sent. Waiting for host review.";
+    return "Submitted. The host can approve it or request a retake.";
   }
 
   if (status === "approved") {
@@ -6446,6 +7128,36 @@ function readStoredPlayer(): StoredPlayer | null {
   }
 }
 
+function getTemplateRoute(pathname: string): TemplateRoute | null {
+  const match = pathname.match(/^\/(host\/)?templates(?:\/([^/]+))?\/?$/);
+
+  if (!match) {
+    return null;
+  }
+
+  let templateId: string | undefined;
+  if (match[2]) {
+    try {
+      templateId = decodeURIComponent(match[2]).toLowerCase();
+    } catch {
+      templateId = "__invalid__";
+    }
+  }
+
+  return {
+    scope: match[1] ? "host" : "public",
+    ...(templateId ? { templateId } : {}),
+  };
+}
+
+function readTemplateIdFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("template")?.trim().toLowerCase() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function storePlayer(player: StoredPlayer) {
   try {
     window.localStorage.setItem(STORAGE_PLAYER_KEY, JSON.stringify(player));
@@ -6524,6 +7236,7 @@ function getPathWithGameCode(pathname: string, code: string) {
     url.searchParams.set("code", gameCode);
     url.searchParams.delete("game");
     url.searchParams.delete("room");
+    url.searchParams.delete("template");
     return `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return pathname;

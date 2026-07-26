@@ -1,3 +1,5 @@
+import type { GameKitId } from "./gameKits";
+
 export const DEFAULT_GAME_CODE = "";
 export const PROOFS_BUCKET = "proofs";
 
@@ -156,10 +158,12 @@ export async function claimHost({
   gameCode,
   pin,
   displayName,
+  templateId,
 }: {
   gameCode: string;
   pin: string;
   displayName: string;
+  templateId?: GameKitId;
 }) {
   const code = normalizeGameCode(gameCode);
   if (!code) throw new Error("Game code is required.");
@@ -167,7 +171,11 @@ export async function claimHost({
     `/api/games/${encodeURIComponent(code)}/host`,
     {
       method: "POST",
-      body: JSON.stringify({ pin, displayName: displayName.trim() }),
+      body: JSON.stringify({
+        pin,
+        displayName: displayName.trim(),
+        ...(templateId ? { templateId } : {}),
+      }),
     },
   );
   gameCodeById.set(membership.gameId, code);
@@ -229,7 +237,7 @@ export function configureGame({
   config,
 }: {
   gameId: string;
-  template?: "classic" | "quick" | "free-for-all" | "custom";
+  template?: GameKitId;
   startTime?: string;
   config?: Partial<Pick<Game,
     | "name"

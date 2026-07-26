@@ -173,7 +173,7 @@ export function createStarterRoom({
 }): StoredRoom {
   const gameId = crypto.randomUUID();
   const groups: StoredGroup[] = [];
-  const tasks = STARTER_TASKS.map((item) => ({ ...item }));
+  const tasks = createStarterTasks();
 
   return {
     version: 2,
@@ -211,6 +211,10 @@ export function createStarterRoom({
     memberships: [],
     submissions: [],
   };
+}
+
+export function createStarterTasks(): StoredTask[] {
+  return STARTER_TASKS.map((item) => ({ ...item }));
 }
 
 export function createBoards(

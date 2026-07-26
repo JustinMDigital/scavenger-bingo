@@ -14,7 +14,21 @@ Scavenger Blackout is a reusable, mobile-first game platform. Hosts can run team
 
 New rooms open in setup instead of assuming a particular event. Presets cover a classic scheduled blackout, quick team bingo, and free-for-all play; custom setup exposes the same choices directly. Existing rooms are upgraded in place with their original teams, 5x5 blackout rules, proofs, and scheduled stops preserved.
 
+The hosting flow is setup first, the join lobby last, and live hunt controls only after the host starts the game. Hosts should never be asked to gather players before the rules, teams, boards, and timing are ready.
+
 Success means players can understand what to do immediately, complete tasks without fiddling with the interface, and keep track of time, progress, and proof submissions while staying engaged with the real-world activity.
+
+Ease of use is the top product priority. New features should fit the existing player or host journey, keep the next action obvious, and avoid adding setup or explanation unless it is necessary to run the game.
+
+## Game Template Library
+
+Hosts can begin with a curated game kit that combines recommended rules, teams, timing, and a complete task pool. Applying a template copies it into the temporary room; the host can then change any setting or task without affecting the original template. The initial library covers quick general play, individual play, birthday parties, city exploration, office team-building, and indoor games for kids.
+
+Templates live in a public, searchable library rather than inside the room setup form. Each template has its own page where a host can understand the audience, setting, timing, rules, board size, and task list before starting. A host may create a new room directly from that page. During pre-game setup, the room links back to the same library so the host can safely replace the room setup after a clear warning.
+
+Starting the hunt locks template replacement. An active or completed hunt can still open the library, but choosing another template must create a new room so existing players, progress, proofs, rules, and boards are never silently overwritten.
+
+The built-in library is reviewed and intentionally small. A later phase may let hosts save and privately share their own templates. Public user submissions should only appear after review for safety, privacy, appropriateness, and task quality; submissions should not automatically publish into a public marketplace.
 
 ## Brand Personality
 
@@ -55,4 +69,4 @@ long-term storage.
 - Timing: no timer, a duration countdown with pause/add-time controls, or scheduled stops.
 - Lobby: open or closed; manual team choice or balanced automatic assignment.
 - People: add, rename, recolor, reorder, and remove teams; move or kick players; promote co-hosts and transfer primary-host ownership.
-- Sharing: room code, direct player link, and join QR code.
+- Sharing: room code, direct player link, join QR code, and a projector-friendly join screen with a live player roster.

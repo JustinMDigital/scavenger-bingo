@@ -1,5 +1,6 @@
 import { exports as workerExports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { GAME_KITS } from "../src/gameKits";
 import { createStarterRoom, upgradeRoom } from "./model";
 
 const ORIGIN = "https://example.com";
@@ -173,6 +174,21 @@ describe("Cloudflare game room", () => {
     expect(playerState.submissions).toHaveLength(1);
     expect(playerState.submissions[0].status).toBe("approved");
 
+    const markSubmitted = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "updateSubmissionStatus",
+        payload: { submissionId: proofBody.data.id, status: "pending" },
+      },
+    );
+    expect(markSubmitted.status).toBe(200);
+
+    const submittedPlayerState = await (
+      await get("/api/games/CF-TEST", PLAYER_COOKIE)
+    ).json<GameState>();
+    expect(submittedPlayerState.submissions[0].status).toBe("pending");
+
     const otherState = await (
       await get("/api/games/CF-TEST", OTHER_COOKIE)
     ).json<GameState>();
@@ -272,6 +288,145 @@ describe("Cloudflare game room", () => {
     expect(lateJoin.status).toBe(409);
   });
 
+  it("applies every curated game kit as an editable room copy", async () => {
+    const hostCookie = "scavenger_session=kit-host-session-000000000001";
+    expect((await postJson("/api/games/KIT-TEST/host", hostCookie, {
+      pin: "2468",
+      displayName: "Template Host",
+    })).status).toBe(200);
+    const initial = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
+
+    for (const kit of GAME_KITS) {
+      const response = await postJson("/api/games/KIT-TEST/actions", hostCookie, {
+        action: "configureGame",
+        payload: { gameId: initial.game.id, template: kit.id },
+      });
+      expect(response.status, kit.id).toBe(200);
+
+      const state = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
+      expect(state.game.name).toBe(kit.gameName);
+      expect(state.game.playMode).toBe(kit.playMode);
+      expect(state.game.winCondition).toBe(kit.winCondition);
+      expect(state.game.boardSize).toBe(kit.boardSize);
+      expect(state.game.timerDurationMinutes).toBe(kit.timerDurationMinutes);
+      expect(state.groups).toHaveLength(kit.teamCount);
+      expect(state.tasks).toHaveLength(kit.tasks?.length ?? 42);
+      expect(new Set(state.tasks.map((task) => task.id)).size).toBe(state.tasks.length);
+      expect(state.boardAssignments).toHaveLength(
+        kit.playMode === "teams" ? kit.teamCount * kit.boardSize * kit.boardSize : 0,
+      );
+    }
+
+    const birthdayKit = GAME_KITS.find((kit) => kit.id === "birthday-party")!;
+    await postJson("/api/games/KIT-TEST/actions", hostCookie, {
+      action: "configureGame",
+      payload: { gameId: initial.game.id, template: birthdayKit.id },
+    });
+    const birthdayState = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
+    const firstTask = birthdayState.tasks[0];
+    expect((await postJson("/api/games/KIT-TEST/actions", hostCookie, {
+      action: "updateTask",
+      payload: {
+        gameId: initial.game.id,
+        taskId: firstTask.id,
+        patch: { title: "Our Custom Opening Photo" },
+      },
+    })).status).toBe(200);
+    const customized = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
+    expect(customized.tasks[0].title).toBe("Our Custom Opening Photo");
+    expect(birthdayKit.tasks?.[0].title).toBe("Birthday Group Photo");
+
+    await postJson("/api/games/KIT-TEST/actions", hostCookie, {
+      action: "configureGame",
+      payload: { gameId: initial.game.id, template: "quick" },
+    });
+    const reset = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
+    expect(reset.tasks).toHaveLength(42);
+    expect(reset.tasks.some((task) => task.title === "Our Custom Opening Photo")).toBe(false);
+  });
+
+  it("creates a new room from a chosen public template", async () => {
+    const hostCookie = "scavenger_session=template-create-host-00000001";
+    const template = GAME_KITS.find((kit) => kit.id === "birthday-party")!;
+    const response = await postJson("/api/games/TEMPLATE-START/host", hostCookie, {
+      pin: "8642",
+      displayName: "Party Host",
+      templateId: template.id,
+    });
+
+    expect(response.status).toBe(200);
+    const state = await (
+      await get("/api/games/TEMPLATE-START", hostCookie)
+    ).json<GameState>();
+    expect(state.game.name).toBe(template.gameName);
+    expect(state.game.setupComplete).toBe(false);
+    expect(state.game.boardHidden).toBe(true);
+    expect(state.groups).toHaveLength(template.teamCount);
+    expect(state.tasks).toHaveLength(template.tasks!.length);
+    expect(state.boardAssignments).toHaveLength(
+      template.teamCount * template.boardSize * template.boardSize,
+    );
+  });
+
+  it("rejects invalid creation templates without leaving a room behind", async () => {
+    const hostCookie = "scavenger_session=invalid-template-host-000001";
+    const response = await postJson("/api/games/BAD-TEMPLATE/host", hostCookie, {
+      pin: "8642",
+      displayName: "Template Host",
+      templateId: "not-a-template",
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json<{ error: string }>()).toEqual({
+      error: "Choose a valid game template.",
+    });
+    expect((await get("/api/games/BAD-TEMPLATE", hostCookie)).status).toBe(404);
+  });
+
+  it("protects a started hunt from template replacement", async () => {
+    const hostCookie = "scavenger_session=started-template-host-00001";
+    expect((await postJson("/api/games/LOCKED-TEMPLATE/host", hostCookie, {
+      pin: "8642",
+      displayName: "Template Host",
+      templateId: "quick",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/LOCKED-TEMPLATE", hostCookie)
+    ).json<GameState>();
+
+    expect((await postJson("/api/games/LOCKED-TEMPLATE/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: {
+          setupComplete: true,
+          phase: "live",
+          boardHidden: false,
+        },
+      },
+    })).status).toBe(200);
+
+    const replace = await postJson(
+      "/api/games/LOCKED-TEMPLATE/actions",
+      hostCookie,
+      {
+        action: "configureGame",
+        payload: { gameId: initial.game.id, template: "birthday-party" },
+      },
+    );
+    expect(replace.status).toBe(409);
+    expect(await replace.json<{ error: string }>()).toEqual({
+      error: "Start a new room to use a different template after the hunt begins.",
+    });
+
+    const protectedState = await (
+      await get("/api/games/LOCKED-TEMPLATE", hostCookie)
+    ).json<GameState>();
+    expect(protectedState.game.name).toBe("Quick Bingo");
+    expect(protectedState.game.setupComplete).toBe(true);
+    expect(protectedState.game.phase).toBe("live");
+  });
+
   it("renames and removes empty teams and manages co-host ownership", async () => {
     const hostCookie = "scavenger_session=manage-host-session-00000001";
     const playerCookie = "scavenger_session=manage-player-session-000001";
@@ -352,9 +507,19 @@ function workerFetch(input: string, init?: RequestInit) {
 const SELF_FETCH = workerFetch;
 
 type GameState = {
-  game: { id: string; boardHidden: boolean; setupComplete: boolean; timerMode: string; playMode: string; boardSize: number };
+  game: {
+    id: string;
+    name: string;
+    boardHidden: boolean;
+    setupComplete: boolean;
+    timerMode: string;
+    timerDurationMinutes: number;
+    playMode: string;
+    winCondition: string;
+    boardSize: number;
+  };
   groups: Array<{ id: string; name: string }>;
-  tasks: Array<{ id: string }>;
+  tasks: Array<{ id: string; title: string }>;
   boardAssignments: Array<{ groupId: string; taskId: string; slotOrder: number }>;
   membership: { role: string } | null;
   memberships: Array<{ id: string; isOwner?: boolean }>;

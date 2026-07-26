@@ -4,9 +4,11 @@ import {
   createBoardForGroup,
   createBoards,
   createStarterRoom,
+  createStarterTasks,
   toPublicGroup,
   upgradeRoom,
 } from "./model";
+import { getGameKit } from "../src/gameKits";
 import type {
   BoardSize,
   HuntPhase,
@@ -293,6 +295,7 @@ export class GameRoom extends DurableObject<Env> {
     const body = await readJson<{
       pin?: string;
       displayName?: string;
+      templateId?: string;
     }>(request);
     const pin = body.pin?.trim() ?? "";
     const displayName = cleanName(body.displayName, "Host name");
@@ -311,9 +314,25 @@ export class GameRoom extends DurableObject<Env> {
 
       const pinSalt = crypto.randomUUID();
       const pinHash = await hashPin(pinSalt, pin);
-      this.room = createStarterRoom({ code, pinSalt, pinHash });
+      const newRoom = createStarterRoom({ code, pinSalt, pinHash });
+      if (body.templateId !== undefined) {
+        const templateId = stringValue(body.templateId).trim().toLowerCase();
+        if (!getGameKit(templateId)) {
+          throw new HttpError(400, "Choose a valid game template.");
+        }
+        applyRoomTemplate(newRoom, templateId);
+        normalizePlayerOwnership(newRoom);
+        regenerateBoards(newRoom);
+      }
+      this.room = newRoom;
       await this.ctx.storage.setAlarm(this.room.expiresAt);
     } else {
+      if (body.templateId !== undefined) {
+        throw new HttpError(
+          409,
+          "Open the existing room before choosing a different template.",
+        );
+      }
       this.checkHostRateLimit(rateLimitKey);
       const existingRoom = this.requireRoom();
       const candidateHash = await hashPin(existingRoom.pinSalt, pin);
@@ -613,6 +632,12 @@ export class GameRoom extends DurableObject<Env> {
           throw new HttpError(409, "Reset proofs before changing the game format.");
         }
         if (payload.template !== undefined) {
+          if (room.game.setupComplete || room.game.phase !== "review") {
+            throw new HttpError(
+              409,
+              "Start a new room to use a different template after the hunt begins.",
+            );
+          }
           applyRoomTemplate(room, stringValue(payload.template), optionalString(payload.startTime));
         }
         if (payload.config !== undefined) {
@@ -759,7 +784,7 @@ export class GameRoom extends DurableObject<Env> {
           (item) => item.id === stringValue(payload.submissionId),
         );
         const status = stringValue(payload.status) as SubmissionStatus;
-        if (!submission || !["approved", "retake"].includes(status)) {
+        if (!submission || !["pending", "approved", "retake"].includes(status)) {
           throw new HttpError(400, "Choose a valid submission status.");
         }
         submission.status = status;
@@ -1391,6 +1416,29 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
   room.game.timerRunning = false;
   room.submissions = [];
 
+  const gameKit = getGameKit(templateId);
+  if (gameKit) {
+    room.game.name = gameKit.gameName;
+    room.game.playMode = gameKit.playMode;
+    room.game.winCondition = gameKit.winCondition;
+    room.game.boardSize = gameKit.boardSize;
+    room.game.boardMode = gameKit.boardMode;
+    room.game.freeSpace = gameKit.freeSpace;
+    room.game.proofMode = gameKit.proofMode;
+    room.game.approvalMode = gameKit.approvalMode;
+    room.game.timerMode = gameKit.timerMode;
+    room.game.timerDurationMinutes = gameKit.timerDurationMinutes;
+    room.game.timerSecondsTotal = gameKit.timerDurationMinutes * 60;
+    room.groups = Array.from({ length: gameKit.teamCount }, (_, index) =>
+      createGroup(room, `Team ${index + 1}`, index + 1),
+    );
+    room.stops = [];
+    room.tasks = gameKit.tasks
+      ? gameKit.tasks.map((task) => ({ ...task }))
+      : createStarterTasks();
+    return;
+  }
+
   if (templateId === "classic") {
     room.game.playMode = "teams";
     room.game.winCondition = "blackout";
@@ -1400,6 +1448,7 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
     room.game.proofMode = "required";
     room.game.approvalMode = "host";
     room.game.timerMode = "schedule";
+    room.tasks = createStarterTasks();
     room.groups = [
       createGroup(room, "Team 1", 1),
       createGroup(room, "Team 2", 2),
@@ -1452,6 +1501,7 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
     room.game.timerMode = "none";
     room.game.timerDurationMinutes = 60;
     room.game.timerSecondsTotal = 0;
+    room.tasks = createStarterTasks();
     room.groups = [];
     room.stops = [];
     return;
