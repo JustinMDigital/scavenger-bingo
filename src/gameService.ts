@@ -74,7 +74,6 @@ export type Game = {
 export type Membership = {
   id: string;
   gameId: string;
-  userId: string;
   role: "player" | "host";
   groupId: string | null;
   displayName: string;
@@ -197,9 +196,29 @@ export function movePlayerMembership({
 }
 
 export function kickPlayerMembership(membershipId: string) {
-  return action<Membership>(requireCode(membershipId), "kickPlayer", {
+  return action<{
+    membership: Membership;
+    deletedSubmissions: number;
+    deletedImages: number;
+  }>(requireCode(membershipId), "kickPlayer", {
     membershipId,
   });
+}
+
+export function deletePlayerMembershipData(membershipId: string) {
+  return action<{
+    membership: Membership;
+    deletedSubmissions: number;
+    deletedImages: number;
+  }>(requireCode(membershipId), "deletePlayerData", { membershipId });
+}
+
+export function leaveGame(gameId: string) {
+  return action<{
+    membership: Membership;
+    deletedSubmissions: number;
+    deletedImages: number;
+  }>(requireCode(gameId), "leaveGame", { gameId });
 }
 
 export function addGroup({ gameId, name }: { gameId: string; name?: string }) {

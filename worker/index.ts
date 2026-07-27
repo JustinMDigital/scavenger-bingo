@@ -24,15 +24,30 @@ import type {
 
 const SESSION_COOKIE = "scavenger_session";
 const ROOM_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_ACTIVE_ROOMS = 40;
-const MAX_ROOMS_PER_CLIENT_PER_DAY = 2;
+const ROOM_RESERVATION_MS = 5 * 60 * 1000;
+const MAX_ACTIVE_ROOMS = 100;
+const MAX_ROOMS_PER_BROWSER_PER_DAY = 10;
+const MAX_ROOMS_PER_NETWORK_PER_DAY = 100;
 const MAX_GROUPS_PER_ROOM = 8;
 const MAX_MEMBERS_PER_ROOM = 100;
+const MAX_PLAYERS_PER_ROOM = 95;
+const MAX_NEW_JOINS_PER_NETWORK_WINDOW = 50;
+const JOIN_WINDOW_MS = 60 * 1000;
+const JOIN_ATTEMPTS_KEY_PREFIX = "join-attempts:";
 const MAX_TASKS_PER_ROOM = 100;
 const MAX_STOPS_PER_ROOM = 20;
 const MAX_PROOF_BYTES = 500 * 1024;
+const MAX_ROOM_PROOF_BYTES = 25 * 1024 * 1024;
+const MAX_JSON_BYTES = 64 * 1024;
+const MAX_IMAGE_DIMENSION = 8192;
+const MAX_IMAGE_PIXELS = 20_000_000;
+const MAX_SOCKETS_PER_MEMBERSHIP = 3;
+const MAX_SOCKETS_PER_ROOM = 200;
+const MAX_MUTATIONS_PER_MEMBERSHIP_WINDOW = 180;
+const MUTATION_WINDOW_MS = 60 * 1000;
 const MAX_HOST_ATTEMPTS = 5;
 const HOST_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const HOST_ATTEMPTS_KEY_PREFIX = "host-attempts:";
 const ROOM_KEY = "room";
 const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
 
@@ -42,9 +57,17 @@ export interface Env {
   ROOM_REGISTRY: DurableObjectNamespace<RoomRegistry>;
 }
 
+type RegistryRoom = {
+  expiresAt: number;
+  reservationId: string;
+  confirmed: boolean;
+};
+
 type RegistryState = {
-  rooms: Record<string, number>;
-  clientCreations: Record<string, { day: string; count: number }>;
+  rooms: Record<string, number | RegistryRoom>;
+  browserCreations?: Record<string, { day: string; count: number }>;
+  networkCreations?: Record<string, { day: string; count: number }>;
+  clientCreations?: Record<string, { day: string; count: number }>;
 };
 
 type ActionRequest = {
@@ -79,10 +102,12 @@ export default {
     const code = normalizeGameCode(match[1]);
     const session = readSession(request);
     const sessionId = session ?? crypto.randomUUID();
-    const clientKey = await getClientKey(request);
+    const networkKey = await getNetworkKey(request);
+    const browserKey = await hashKey(sessionId);
     const headers = new Headers(request.headers);
     headers.set("x-scavenger-session", sessionId);
-    headers.set("x-scavenger-client", clientKey);
+    headers.set("x-scavenger-network", networkKey);
+    headers.set("x-scavenger-browser", browserKey);
     headers.set("x-scavenger-room-code", code);
     headers.set("x-scavenger-public-origin", getPublicOrigin(request));
     headers.delete("cookie");
@@ -101,7 +126,13 @@ export default {
         const reserveResponse = await registry.fetch("https://registry.internal/reserve", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code, clientKey, now: Date.now() }),
+          body: JSON.stringify({
+            code,
+            browserKey,
+            networkKey,
+            reservationId: sessionId,
+            now: Date.now(),
+          }),
         });
 
         if (!reserveResponse.ok) {
@@ -126,7 +157,7 @@ export class RoomRegistry extends DurableObject<Env> {
     ctx.blockConcurrencyWhile(async () => {
       this.registry =
         (await ctx.storage.get<RegistryState>("registry")) ??
-        { rooms: {}, clientCreations: {} };
+        { rooms: {}, browserCreations: {}, networkCreations: {} };
     });
   }
 
@@ -135,22 +166,36 @@ export class RoomRegistry extends DurableObject<Env> {
     const registry = this.requireRegistry();
 
     if (request.method === "POST" && url.pathname === "/reserve") {
-      const body = await readJson<{ code?: string; clientKey?: string; now?: number }>(
-        request,
-      );
+      const body = await readJson<{
+        code?: string;
+        browserKey?: string;
+        networkKey?: string;
+        reservationId?: string;
+        now?: number;
+      }>(request);
       const code = normalizeGameCode(body.code ?? "");
-      const clientKey = body.clientKey?.slice(0, 128) ?? "unknown";
+      const browserKey = body.browserKey?.slice(0, 128) ?? "unknown-browser";
+      const networkKey = body.networkKey?.slice(0, 128) ?? "unknown-network";
+      const reservationId = body.reservationId?.slice(0, 128) ?? "";
       const now = Number.isFinite(body.now) ? Number(body.now) : Date.now();
 
-      for (const [roomCode, expiresAt] of Object.entries(registry.rooms)) {
-        if (expiresAt <= now) delete registry.rooms[roomCode];
+      for (const [roomCode, value] of Object.entries(registry.rooms)) {
+        if (registryRoom(value).expiresAt <= now) delete registry.rooms[roomCode];
       }
 
-      if (registry.rooms[code]) {
-        return json({ ok: true, alreadyReserved: true });
+      const existingRoom = registry.rooms[code];
+      if (existingRoom) {
+        const existing = registryRoom(existingRoom);
+        if (!existing.confirmed && existing.reservationId === reservationId) {
+          return json({ ok: true, alreadyReserved: true });
+        }
+        return json({ error: "That room code was just claimed. Choose another code." }, 409);
       }
 
       if (Object.keys(registry.rooms).length >= MAX_ACTIVE_ROOMS) {
+        warnOperationalEvent("active_room_limit", {
+          activeRooms: Object.keys(registry.rooms).length,
+        });
         return json(
           { error: "The free public beta is at its active-room limit. Try again later." },
           429,
@@ -158,30 +203,91 @@ export class RoomRegistry extends DurableObject<Env> {
       }
 
       const day = new Date(now).toISOString().slice(0, 10);
-      for (const [storedClientKey, storedCreation] of Object.entries(
-        registry.clientCreations,
-      )) {
-        if (storedCreation.day !== day) delete registry.clientCreations[storedClientKey];
-      }
-      const creation = registry.clientCreations[clientKey];
-      const count = creation?.day === day ? creation.count : 0;
+      registry.browserCreations ??= {};
+      registry.networkCreations ??= {};
+      clearOldDailyCounters(registry.browserCreations, day);
+      clearOldDailyCounters(registry.networkCreations, day);
+      const browserCount =
+        registry.browserCreations[browserKey]?.day === day
+          ? registry.browserCreations[browserKey].count
+          : 0;
+      const networkCount =
+        registry.networkCreations[networkKey]?.day === day
+          ? registry.networkCreations[networkKey].count
+          : 0;
 
-      if (count >= MAX_ROOMS_PER_CLIENT_PER_DAY) {
+      if (browserCount >= MAX_ROOMS_PER_BROWSER_PER_DAY) {
+        warnOperationalEvent("browser_room_creation_limit", {
+          dailyCreations: browserCount,
+        });
         return json(
           { error: "This browser has reached today's room-creation limit." },
           429,
         );
       }
+      if (networkCount >= MAX_ROOMS_PER_NETWORK_PER_DAY) {
+        warnOperationalEvent("network_room_creation_limit", {
+          dailyCreations: networkCount,
+        });
+        return json(
+          { error: "This network has reached today's safety limit. Contact support if this is a school event." },
+          429,
+        );
+      }
 
-      registry.rooms[code] = now + ROOM_LIFETIME_MS;
-      registry.clientCreations[clientKey] = { day, count: count + 1 };
+      registry.rooms[code] = {
+        expiresAt: now + ROOM_RESERVATION_MS,
+        reservationId,
+        confirmed: false,
+      };
+      registry.browserCreations[browserKey] = { day, count: browserCount + 1 };
+      registry.networkCreations[networkKey] = { day, count: networkCount + 1 };
+      await this.ctx.storage.put("registry", registry);
+      return json({ ok: true });
+    }
+
+    if (request.method === "POST" && url.pathname === "/confirm") {
+      const body = await readJson<{
+        code?: string;
+        reservationId?: string;
+        expiresAt?: number;
+      }>(request);
+      const code = normalizeGameCode(body.code ?? "");
+      const existing = registry.rooms[code];
+      if (!existing) {
+        throw new HttpError(409, "The room reservation expired. Create the room again.");
+      }
+      const normalized = registryRoom(existing);
+      if (
+        normalized.confirmed ||
+        normalized.reservationId !== body.reservationId?.slice(0, 128)
+      ) {
+        throw new HttpError(409, "The room reservation no longer belongs to this browser.");
+      }
+      registry.rooms[code] = {
+        expiresAt: Number.isFinite(body.expiresAt)
+          ? Number(body.expiresAt)
+          : Date.now() + ROOM_LIFETIME_MS,
+        reservationId: normalized.reservationId,
+        confirmed: true,
+      };
       await this.ctx.storage.put("registry", registry);
       return json({ ok: true });
     }
 
     if (request.method === "POST" && url.pathname === "/release") {
-      const body = await readJson<{ code?: string }>(request);
-      delete registry.rooms[normalizeGameCode(body.code ?? "")];
+      const body = await readJson<{ code?: string; reservationId?: string }>(request);
+      const code = normalizeGameCode(body.code ?? "");
+      const existing = registry.rooms[code];
+      if (existing) {
+        const normalized = registryRoom(existing);
+        if (
+          !body.reservationId ||
+          normalized.reservationId === body.reservationId.slice(0, 128)
+        ) {
+          delete registry.rooms[code];
+        }
+      }
       await this.ctx.storage.put("registry", registry);
       return json({ ok: true });
     }
@@ -201,7 +307,7 @@ export class RoomRegistry extends DurableObject<Env> {
 
 export class GameRoom extends DurableObject<Env> {
   private room: StoredRoom | null = null;
-  private failedHostAttempts = new Map<string, number[]>();
+  private mutationAttempts = new Map<string, number[]>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -258,7 +364,8 @@ export class GameRoom extends DurableObject<Env> {
     } catch (error) {
       if (request.headers.get("x-scavenger-allow-create") === "1" && !this.room) {
         const code = normalizeGameCode(request.headers.get("x-scavenger-room-code") ?? "");
-        if (code) await this.releaseRegistry(code);
+        const reservationId = request.headers.get("x-scavenger-session") ?? undefined;
+        if (code) await this.releaseRegistry(code, reservationId);
       }
 
       if (isHttpError(error)) {
@@ -303,13 +410,21 @@ export class GameRoom extends DurableObject<Env> {
     }>(request);
     const pin = body.pin?.trim() ?? "";
     const displayName = cleanName(body.displayName, "Host name");
-    const rateLimitKey = request.headers.get("x-scavenger-client") || sessionId;
-
-    if (pin.length < 4 || pin.length > 32) {
-      throw new HttpError(400, "Host PIN must be 4 to 32 characters.");
-    }
-
     const isCreatingRoom = !this.room;
+    const browserRateKey =
+      `browser:${request.headers.get("x-scavenger-browser") || sessionId}`;
+    const networkRateKey =
+      `network:${request.headers.get("x-scavenger-network") || "unknown"}`;
+    const minimumPinLength = isCreatingRoom ? 8 : 4;
+
+    if (pin.length < minimumPinLength || pin.length > 32) {
+      throw new HttpError(
+        400,
+        isCreatingRoom
+          ? "New room PINs must be 8 to 32 characters."
+          : "Host PIN must be 4 to 32 characters.",
+      );
+    }
 
     if (isCreatingRoom) {
       if (request.headers.get("x-scavenger-allow-create") !== "1") {
@@ -337,16 +452,23 @@ export class GameRoom extends DurableObject<Env> {
           "Open the existing room before choosing a different template.",
         );
       }
-      this.checkHostRateLimit(rateLimitKey);
+      await this.checkHostRateLimit(browserRateKey, MAX_HOST_ATTEMPTS, "browser");
+      await this.checkHostRateLimit(networkRateKey, 50, "network");
       const existingRoom = this.requireRoom();
       const candidateHash = await hashPin(existingRoom.pinSalt, pin);
 
       if (!constantTimeEqual(candidateHash, existingRoom.pinHash)) {
-        this.recordFailedHostAttempt(rateLimitKey);
+        await Promise.all([
+          this.recordFailedHostAttempt(browserRateKey),
+          this.recordFailedHostAttempt(networkRateKey),
+        ]);
         throw new HttpError(403, "Invalid host PIN.");
       }
 
-      this.failedHostAttempts.delete(rateLimitKey);
+      await Promise.all([
+        this.ctx.storage.delete(`${HOST_ATTEMPTS_KEY_PREFIX}${browserRateKey}`),
+        this.ctx.storage.delete(`${HOST_ATTEMPTS_KEY_PREFIX}${networkRateKey}`),
+      ]);
     }
 
     const room = this.requireRoom();
@@ -378,6 +500,16 @@ export class GameRoom extends DurableObject<Env> {
       membership,
     ];
     await this.saveRoom();
+    if (isCreatingRoom) {
+      try {
+        await this.confirmRegistry(code, sessionId, room.expiresAt);
+      } catch (error) {
+        await this.ctx.storage.deleteAll();
+        this.room = null;
+        await this.releaseRegistry(code, sessionId);
+        throw error;
+      }
+    }
     this.broadcast();
     return json({ data: publicMembership(membership) });
   }
@@ -400,7 +532,8 @@ export class GameRoom extends DurableObject<Env> {
     if (existing?.role === "host") {
       throw new HttpError(409, "This browser is already hosting the room.");
     }
-    if (!existing && room.memberships.length >= MAX_MEMBERS_PER_ROOM) {
+    const playerCount = room.memberships.filter((item) => item.role === "player").length;
+    if (!existing && playerCount >= MAX_PLAYERS_PER_ROOM) {
       throw new HttpError(409, "This room has reached its player limit.");
     }
 
@@ -429,6 +562,13 @@ export class GameRoom extends DurableObject<Env> {
 
     if (room.game.playMode === "teams" && !room.groups.some((item) => item.id === groupId)) {
       throw new HttpError(400, "Choose a valid team.");
+    }
+
+    if (!existing) {
+      await this.recordNewJoin(
+        request.headers.get("x-scavenger-network") ?? "unknown-network",
+        room.game.code,
+      );
     }
 
     const membership: StoredMembership = existing
@@ -472,10 +612,11 @@ export class GameRoom extends DurableObject<Env> {
     const gameId = request.headers.get("x-game-id") ?? "";
     const groupId = request.headers.get("x-group-id") ?? "";
     const taskId = request.headers.get("x-task-id") ?? "";
-    const imageName = cleanFileName(
+    const suppliedImageName = cleanFileName(
       decodeHeaderValue(request.headers.get("x-file-name") ?? "proof.jpg"),
     );
-    const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+    const declaredContentType =
+      request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
     requireGameId(room, gameId);
     const ownerId = getMembershipOwnerId(room, membership);
 
@@ -497,19 +638,51 @@ export class GameRoom extends DurableObject<Env> {
     if (!task || !isAssigned || task.free) {
       throw new HttpError(400, "That task is not available for proof submission.");
     }
-    if (!isAllowedImageType(contentType)) {
+    if (!isAllowedImageType(declaredContentType)) {
       throw new HttpError(415, "Upload a JPG, PNG, or WebP proof photo.");
     }
 
-    const bytes = await request.arrayBuffer();
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_PROOF_BYTES) {
+    const bytes = await readLimitedBytes(
+      request,
+      MAX_PROOF_BYTES,
+      "Proof photos must be 500 KB or smaller.",
+    );
+    if (bytes.byteLength === 0) {
       throw new HttpError(413, "Proof photos must be 500 KB or smaller.");
+    }
+    const image = inspectImage(bytes);
+    if (image.contentType !== declaredContentType) {
+      throw new HttpError(415, "The proof photo type does not match its image data.");
+    }
+    if (
+      image.width > MAX_IMAGE_DIMENSION ||
+      image.height > MAX_IMAGE_DIMENSION ||
+      image.width * image.height > MAX_IMAGE_PIXELS
+    ) {
+      throw new HttpError(413, "Proof photos must be no larger than 8,192 pixels per side.");
     }
 
     const now = Date.now();
+    const imageName = normalizeImageFileName(suppliedImageName, image.contentType);
     const existing = room.submissions.find(
       (item) => item.groupId === groupId && item.taskId === taskId,
     );
+    const existingBytes = existing?.byteLength ?? 0;
+    const roomProofBytes = room.submissions.reduce(
+      (total, item) => total + (item.byteLength ?? 0),
+      0,
+    );
+    if (roomProofBytes - existingBytes + bytes.byteLength > MAX_ROOM_PROOF_BYTES) {
+      warnOperationalEvent("room_proof_storage_limit", {
+        roomCode: room.game.code,
+        storedBytes: roomProofBytes,
+      });
+      throw new HttpError(
+        413,
+        "This room has reached its 25 MB photo limit. Remove proofs before adding more.",
+      );
+    }
+    const contentType = image.contentType;
     const submission: StoredSubmission = existing
       ? {
           ...existing,
@@ -517,6 +690,7 @@ export class GameRoom extends DurableObject<Env> {
           submittedByName: membership.displayName,
           imageName,
           contentType,
+          byteLength: bytes.byteLength,
           status: room.game.approvalMode === "automatic" ? "approved" : "pending",
           updatedAt: now,
         }
@@ -529,6 +703,7 @@ export class GameRoom extends DurableObject<Env> {
           imagePath: "",
           imageName,
           contentType,
+          byteLength: bytes.byteLength,
           status: room.game.approvalMode === "automatic" ? "approved" : "pending",
           createdAt: now,
           updatedAt: now,
@@ -576,6 +751,9 @@ export class GameRoom extends DurableObject<Env> {
   private async performAction(request: Request, sessionId: string, origin: string) {
     const room = this.requireRoom();
     const body = await readJson<ActionRequest>(request);
+    if (room.memberships.some((item) => item.userId === sessionId)) {
+      this.recordMutation(sessionId);
+    }
     const payload = body.payload ?? {};
     let data: unknown = null;
 
@@ -627,6 +805,15 @@ export class GameRoom extends DurableObject<Env> {
       return json({ data });
     }
 
+    if (body.action === "leaveGame") {
+      const membership = requirePlayer(room, sessionId);
+      requireGameId(room, payload.gameId);
+      const deleted = await deleteMembershipData(this.ctx.storage, room, membership);
+      await this.saveRoom();
+      this.broadcast("player-left");
+      return json({ data: deleted });
+    }
+
     requireHost(room, sessionId);
 
     switch (body.action) {
@@ -667,8 +854,12 @@ export class GameRoom extends DurableObject<Env> {
       }
       case "kickPlayer": {
         const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
-        room.memberships = room.memberships.filter((item) => item.id !== membership.id);
-        data = publicMembership(membership);
+        data = await deleteMembershipData(this.ctx.storage, room, membership);
+        break;
+      }
+      case "deletePlayerData": {
+        const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
+        data = await deleteMembershipData(this.ctx.storage, room, membership);
         break;
       }
       case "promotePlayer": {
@@ -944,14 +1135,26 @@ export class GameRoom extends DurableObject<Env> {
             (item) => item.groupId === getMembershipOwnerId(room, membership),
           )
         : [];
+    const canSeeBoard = isHost || !room.game.boardHidden;
+    const visibleRoster = isHost
+      ? room.memberships
+      : isPlayer
+        ? room.memberships.filter((item) =>
+            room.game.playMode === "individual"
+              ? item.id === membership.id
+              : item.role === "player" && item.groupId === membership.groupId,
+          )
+        : [];
 
     return json({
       game: room.game,
       groups: [...room.groups].sort((a, b) => a.sortOrder - b.sortOrder).map(toPublicGroup),
-      tasks: [...room.tasks].sort((a, b) => a.sortOrder - b.sortOrder),
-      boardAssignments: [...room.boardAssignments].sort(
-        (a, b) => a.slotOrder - b.slotOrder,
-      ),
+      tasks: canSeeBoard
+        ? [...room.tasks].sort((a, b) => a.sortOrder - b.sortOrder)
+        : [],
+      boardAssignments: canSeeBoard
+        ? [...room.boardAssignments].sort((a, b) => a.slotOrder - b.slotOrder)
+        : [],
       stops: [...room.stops].sort((a, b) => a.sortOrder - b.sortOrder),
       membership: membership ? publicMembership(membership) : null,
       memberships: isHost
@@ -961,17 +1164,15 @@ export class GameRoom extends DurableObject<Env> {
         : membership
           ? [publicMembership(membership)]
           : [],
-      roster: membership
-        ? [...room.memberships]
-            .sort((a, b) => a.createdAt - b.createdAt)
-            .map((item) => ({
-              id: item.id,
-              gameId: item.gameId,
-              role: item.role,
-              groupId: item.groupId,
-              displayName: item.displayName,
-            }))
-        : [],
+      roster: visibleRoster
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((item) => ({
+          id: item.id,
+          gameId: item.gameId,
+          role: item.role,
+          groupId: item.groupId,
+          displayName: item.displayName,
+        })),
       submissions: visibleSubmissions.map((item) => publicSubmission(item, room, origin)),
       expiresAt: room.expiresAt,
     });
@@ -982,9 +1183,22 @@ export class GameRoom extends DurableObject<Env> {
     if (!room.memberships.some((item) => item.userId === sessionId)) {
       throw new HttpError(403, "Join the room before opening live updates.");
     }
+    if (this.ctx.getWebSockets(sessionId).length >= MAX_SOCKETS_PER_MEMBERSHIP) {
+      warnOperationalEvent("membership_socket_limit", {
+        roomCode: room.game.code,
+      });
+      throw new HttpError(429, "This browser already has enough live connections.");
+    }
+    if (this.ctx.getWebSockets().length >= MAX_SOCKETS_PER_ROOM) {
+      warnOperationalEvent("room_socket_limit", {
+        roomCode: room.game.code,
+        sockets: this.ctx.getWebSockets().length,
+      });
+      throw new HttpError(429, "This room has reached its live-connection limit.");
+    }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.ctx.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server, [sessionId]);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -1009,31 +1223,98 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private checkHostRateLimit(sessionId: string) {
+  private async checkHostRateLimit(
+    rateKey: string,
+    maximum: number,
+    scope: "browser" | "network",
+  ) {
     const cutoff = Date.now() - HOST_ATTEMPT_WINDOW_MS;
-    const attempts = (this.failedHostAttempts.get(sessionId) ?? []).filter(
+    const storageKey = `${HOST_ATTEMPTS_KEY_PREFIX}${rateKey}`;
+    const attempts = (
+      (await this.ctx.storage.get<number[]>(storageKey)) ?? []
+    ).filter(
       (timestamp) => timestamp > cutoff,
     );
-    this.failedHostAttempts.set(sessionId, attempts);
-    if (attempts.length >= MAX_HOST_ATTEMPTS) {
+    await this.ctx.storage.put(storageKey, attempts);
+    if (attempts.length >= maximum) {
+      warnOperationalEvent("host_pin_rate_limit", {
+        roomCode: this.room?.game.code ?? "unknown",
+        scope,
+        attempts: attempts.length,
+      });
       throw new HttpError(429, "Too many PIN attempts. Try again in 15 minutes.");
     }
   }
 
-  private recordFailedHostAttempt(sessionId: string) {
-    const attempts = this.failedHostAttempts.get(sessionId) ?? [];
+  private async recordFailedHostAttempt(rateKey: string) {
+    const storageKey = `${HOST_ATTEMPTS_KEY_PREFIX}${rateKey}`;
+    const attempts = (await this.ctx.storage.get<number[]>(storageKey)) ?? [];
     attempts.push(Date.now());
-    this.failedHostAttempts.set(sessionId, attempts);
+    await this.ctx.storage.put(storageKey, attempts.slice(-50));
   }
 
-  private async releaseRegistry(code: string) {
+  private async recordNewJoin(networkKey: string, roomCode: string) {
+    const cutoff = Date.now() - JOIN_WINDOW_MS;
+    const storageKey = `${JOIN_ATTEMPTS_KEY_PREFIX}${networkKey.slice(0, 128)}`;
+    const joins = ((await this.ctx.storage.get<number[]>(storageKey)) ?? []).filter(
+      (timestamp) => timestamp > cutoff,
+    );
+    if (joins.length >= MAX_NEW_JOINS_PER_NETWORK_WINDOW) {
+      warnOperationalEvent("rapid_room_join_limit", {
+        roomCode,
+        recentJoinCount: joins.length,
+      });
+      throw new HttpError(
+        429,
+        "This room is receiving joins too quickly. Wait one minute or ask the host for help.",
+      );
+    }
+    joins.push(Date.now());
+    await this.ctx.storage.put(storageKey, joins);
+  }
+
+  private recordMutation(sessionId: string) {
+    const now = Date.now();
+    const cutoff = now - MUTATION_WINDOW_MS;
+    const attempts = (this.mutationAttempts.get(sessionId) ?? []).filter(
+      (timestamp) => timestamp > cutoff,
+    );
+    if (attempts.length >= MAX_MUTATIONS_PER_MEMBERSHIP_WINDOW) {
+      warnOperationalEvent("membership_mutation_limit", {
+        roomCode: this.room?.game.code ?? "unknown",
+        recentMutations: attempts.length,
+      });
+      throw new HttpError(429, "Too many updates. Wait one minute and try again.");
+    }
+    attempts.push(now);
+    this.mutationAttempts.set(sessionId, attempts);
+  }
+
+  private async confirmRegistry(code: string, reservationId: string, expiresAt: number) {
+    const registry = this.env.ROOM_REGISTRY.get(
+      this.env.ROOM_REGISTRY.idFromName("global"),
+    );
+    const response = await registry.fetch("https://registry.internal/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, reservationId, expiresAt }),
+    });
+    if (!response.ok) {
+      const result: { error?: string } = await response
+        .json<{ error?: string }>()
+        .catch(() => ({}));
+      throw new HttpError(response.status, result.error ?? "Room reservation expired.");
+    }
+  }
+
+  private async releaseRegistry(code: string, reservationId?: string) {
     const registry = this.env.ROOM_REGISTRY.get(
       this.env.ROOM_REGISTRY.idFromName("global"),
     );
     await registry.fetch("https://registry.internal/release", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, ...(reservationId ? { reservationId } : {}) }),
     });
   }
 }
@@ -1066,12 +1347,76 @@ function json(value: unknown, status = 200) {
   });
 }
 
+function warnOperationalEvent(
+  event: string,
+  details: Record<string, string | number | boolean>,
+) {
+  console.warn("Scavenger Bingo operational event", {
+    event,
+    ...details,
+  });
+}
+
+function registryRoom(value: number | RegistryRoom): RegistryRoom {
+  return typeof value === "number"
+    ? { expiresAt: value, reservationId: "legacy", confirmed: true }
+    : value;
+}
+
+function clearOldDailyCounters(
+  counters: Record<string, { day: string; count: number }>,
+  day: string,
+) {
+  for (const [key, value] of Object.entries(counters)) {
+    if (value.day !== day) delete counters[key];
+  }
+}
+
 async function readJson<T>(request: Request): Promise<T> {
   try {
-    return (await request.json()) as T;
-  } catch {
+    const bytes = await readLimitedBytes(
+      request,
+      MAX_JSON_BYTES,
+      "Request body must be 64 KB or smaller.",
+    );
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(400, "Request body must be valid JSON.");
   }
+}
+
+async function readLimitedBytes(
+  request: Request,
+  maximumBytes: number,
+  message: string,
+) {
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    throw new HttpError(413, message);
+  }
+  if (!request.body) return new ArrayBuffer(0);
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel();
+      throw new HttpError(413, message);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
 }
 
 function normalizeGameCode(value: string) {
@@ -1143,11 +1488,15 @@ function getPublicOrigin(request: Request) {
   return new URL(request.url).origin;
 }
 
-async function getClientKey(request: Request) {
+async function getNetworkKey(request: Request) {
   const source =
     request.headers.get("cf-connecting-ip") ??
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     "local";
+  return hashKey(source);
+}
+
+async function hashKey(source: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -1184,6 +1533,15 @@ function cleanFileName(value: string) {
   return value.replace(/[\r\n"\\/]/g, "-").slice(0, 120) || "proof.jpg";
 }
 
+function normalizeImageFileName(value: string, contentType: string) {
+  const extension =
+    contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
+  const baseName = cleanFileName(value)
+    .replace(/\.[A-Za-z0-9]{1,10}$/, "")
+    .slice(0, 115);
+  return `${baseName || "proof"}.${extension}`;
+}
+
 function decodeHeaderValue(value: string) {
   try {
     return decodeURIComponent(value);
@@ -1198,6 +1556,104 @@ function safeHeaderValue(value: string) {
 
 function isAllowedImageType(value: string) {
   return ["image/jpeg", "image/png", "image/webp"].includes(value);
+}
+
+function inspectImage(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const png = inspectPng(bytes);
+  if (png) return { contentType: "image/png", ...png };
+  const jpeg = inspectJpeg(bytes);
+  if (jpeg) return { contentType: "image/jpeg", ...jpeg };
+  const webp = inspectWebp(bytes);
+  if (webp) return { contentType: "image/webp", ...webp };
+  throw new HttpError(415, "Upload a valid JPG, PNG, or WebP proof photo.");
+}
+
+function inspectPng(bytes: Uint8Array) {
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (
+    bytes.length < 24 ||
+    !signature.every((value, index) => bytes[index] === value) ||
+    ascii(bytes, 12, 16) !== "IHDR"
+  ) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint32(16);
+  const height = view.getUint32(20);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function inspectJpeg(bytes: Uint8Array) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  const sofMarkers = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce,
+    0xcf,
+  ]);
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+      continue;
+    }
+    if (offset + 1 >= bytes.length) break;
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) break;
+    if (sofMarkers.has(marker) && segmentLength >= 7) {
+      const height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+      const width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function inspectWebp(bytes: Uint8Array) {
+  if (
+    bytes.length < 30 ||
+    ascii(bytes, 0, 4) !== "RIFF" ||
+    ascii(bytes, 8, 12) !== "WEBP"
+  ) {
+    return null;
+  }
+  const chunk = ascii(bytes, 12, 16);
+  if (chunk === "VP8X") {
+    const width = 1 + littleUint24(bytes, 24);
+    const height = 1 + littleUint24(bytes, 27);
+    return { width, height };
+  }
+  if (chunk === "VP8L" && bytes[20] === 0x2f) {
+    const width = 1 + bytes[21] + ((bytes[22] & 0x3f) << 8);
+    const height =
+      1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 0x0f) << 10);
+    return { width, height };
+  }
+  if (
+    chunk === "VP8 " &&
+    bytes[23] === 0x9d &&
+    bytes[24] === 0x01 &&
+    bytes[25] === 0x2a
+  ) {
+    const width = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
+    const height = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  return null;
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number) {
+  return String.fromCharCode(...bytes.slice(start, end));
+}
+
+function littleUint24(bytes: Uint8Array, offset: number) {
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
 }
 
 function proofKey(submissionId: string) {
@@ -1239,20 +1695,19 @@ function getMembershipOwnerId(room: StoredRoom, membership: StoredMembership) {
 }
 
 function publicMembership(membership: StoredMembership) {
-  const { createdAt: _createdAt, ...publicValue } = membership;
+  const { createdAt: _createdAt, userId: _userId, ...publicValue } = membership;
   return publicValue;
 }
 
 function publicSubmission(submission: StoredSubmission, room: StoredRoom, origin: string) {
-  const submitterName =
-    room.memberships.find((item) => item.userId === submission.submittedBy)?.displayName ??
-    submission.submittedByName;
+  const submitter = room.memberships.find((item) => item.userId === submission.submittedBy);
+  const submitterName = submitter?.displayName ?? submission.submittedByName;
   const imageUrl = `${origin}/api/games/${encodeURIComponent(room.game.code)}/proofs/${encodeURIComponent(submission.id)}`;
   return {
     id: submission.id,
     groupId: submission.groupId,
     taskId: submission.taskId,
-    submittedBy: submission.submittedBy,
+    submittedBy: submitter?.id ?? "",
     submittedByName: submitterName,
     imageUrl,
     imagePath: submission.imagePath,
@@ -1642,6 +2097,30 @@ async function deleteProofs(storage: DurableObjectStorage, submissions: StoredSu
   for (let index = 0; index < keys.length; index += 128) {
     await storage.delete(keys.slice(index, index + 128));
   }
+}
+
+async function deleteMembershipData(
+  storage: DurableObjectStorage,
+  room: StoredRoom,
+  membership: StoredMembership,
+) {
+  const submissions = room.submissions.filter(
+    (item) => item.submittedBy === membership.userId,
+  );
+  await deleteProofs(storage, submissions);
+  const submissionIds = new Set(submissions.map((item) => item.id));
+  room.submissions = room.submissions.filter((item) => !submissionIds.has(item.id));
+  room.memberships = room.memberships.filter((item) => item.id !== membership.id);
+  if (room.game.playMode === "individual") {
+    room.boardAssignments = room.boardAssignments.filter(
+      (item) => item.groupId !== membership.id,
+    );
+  }
+  return {
+    membership: publicMembership(membership),
+    deletedSubmissions: submissions.length,
+    deletedImages: submissions.filter((item) => Boolean(item.imagePath)).length,
+  };
 }
 
 function slugify(value: string) {

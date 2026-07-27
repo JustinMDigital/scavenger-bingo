@@ -8,8 +8,24 @@ const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
 const HOST_COOKIE = "scavenger_session=host-session-00000000000001";
 const PLAYER_COOKIE = "scavenger_session=player-session-000000000001";
 const OTHER_COOKIE = "scavenger_session=other-session-0000000000001";
+const VALID_PNG_BYTES = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  ),
+  (character) => character.charCodeAt(0),
+);
 
 describe("Cloudflare game room", () => {
+  it("reports a narrow unauthenticated health signal", async () => {
+    const response = await workerFetch(`${ORIGIN}/api/health`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      backend: "cloudflare-durable-objects",
+    });
+  });
+
   it("upgrades legacy fixed rooms without losing their existing data", () => {
     const legacyRoom = createStarterRoom({
       code: "LEGACY",
@@ -47,7 +63,7 @@ describe("Cloudflare game room", () => {
 
   it("runs a complete host, player, proof, and moderation flow", async () => {
     const host = await postJson("/api/games/CF-TEST/host", HOST_COOKIE, {
-      pin: "2468",
+      pin: "24682468",
       displayName: "Taylor Host",
     });
     expect(host.status).toBe(200);
@@ -56,6 +72,7 @@ describe("Cloudflare game room", () => {
     expect(hostStateResponse.status).toBe(200);
     const hostState = await hostStateResponse.json<GameState>();
     expect(hostState.membership?.role).toBe("host");
+    expect(hostState.membership).not.toHaveProperty("userId");
     expect(hostState.game.setupComplete).toBe(false);
     expect(hostState.groups).toHaveLength(0);
     expect(hostState.boardAssignments).toHaveLength(0);
@@ -96,6 +113,8 @@ describe("Cloudflare game room", () => {
       displayName: "Jordan Player",
     });
     expect(playerJoin.status).toBe(200);
+    const playerJoinBody = await playerJoin.json<{ data: { id: string } }>();
+    expect(playerJoinBody.data).not.toHaveProperty("userId");
 
     const otherJoin = await postJson("/api/games/CF-TEST/join", OTHER_COOKIE, {
       gameId: configuredState.game.id,
@@ -103,6 +122,15 @@ describe("Cloudflare game room", () => {
       displayName: "Morgan Player",
     });
     expect(otherJoin.status).toBe(200);
+
+    const hiddenPlayerState = await (
+      await get("/api/games/CF-TEST", PLAYER_COOKIE)
+    ).json<GameState>();
+    expect(hiddenPlayerState.tasks).toEqual([]);
+    expect(hiddenPlayerState.boardAssignments).toEqual([]);
+    expect(hiddenPlayerState.roster.map((member) => member.displayName)).toEqual([
+      "Jordan Player",
+    ]);
 
     const unhide = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
       action: "updateGame",
@@ -140,10 +168,46 @@ describe("Cloudflare game room", () => {
     });
     expect(oversizedProof.status).toBe(413);
 
-    const proof = await SELF_FETCH(`${ORIGIN}/api/games/CF-TEST/proofs`, {
+    const invalidProof = await SELF_FETCH(`${ORIGIN}/api/games/CF-TEST/proofs`, {
       method: "POST",
       headers: proofHeaders(assignedTask!.taskId),
-      body: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+      body: new TextEncoder().encode("<html>not an image</html>"),
+    });
+    expect(invalidProof.status).toBe(415);
+
+    const mismatchedProof = await SELF_FETCH(
+      `${ORIGIN}/api/games/CF-TEST/proofs`,
+      {
+        method: "POST",
+        headers: proofHeaders(assignedTask!.taskId),
+        body: VALID_PNG_BYTES,
+      },
+    );
+    expect(mismatchedProof.status).toBe(415);
+
+    const extremeDimensionPng = VALID_PNG_BYTES.slice();
+    new DataView(extremeDimensionPng.buffer).setUint32(16, 8_193);
+    const extremeDimensionProof = await SELF_FETCH(
+      `${ORIGIN}/api/games/CF-TEST/proofs`,
+      {
+        method: "POST",
+        headers: {
+          ...proofHeaders(assignedTask!.taskId),
+          "content-type": "image/png",
+        },
+        body: extremeDimensionPng,
+      },
+    );
+    expect(extremeDimensionProof.status).toBe(413);
+
+    const proof = await SELF_FETCH(`${ORIGIN}/api/games/CF-TEST/proofs`, {
+      method: "POST",
+      headers: {
+        ...proofHeaders(assignedTask!.taskId),
+        "content-type": "image/png",
+        "x-file-name": "misleading-name.jpg",
+      },
+      body: VALID_PNG_BYTES,
     });
     expect(proof.status).toBe(200);
     const proofBody = await proof.json<{ data: { id: string; status: string } }>();
@@ -160,7 +224,10 @@ describe("Cloudflare game room", () => {
       HOST_COOKIE,
     );
     expect(hostProof.status).toBe(200);
-    expect(hostProof.headers.get("content-type")).toBe("image/jpeg");
+    expect(hostProof.headers.get("content-type")).toBe("image/png");
+    expect(hostProof.headers.get("content-disposition")).toContain(
+      'filename="misleading-name.png"',
+    );
 
     const approve = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
       action: "updateSubmissionStatus",
@@ -172,8 +239,11 @@ describe("Cloudflare game room", () => {
       await get("/api/games/CF-TEST", PLAYER_COOKIE)
     ).json<GameState>();
     expect(playerState.membership?.role).toBe("player");
+    expect(playerState.membership).not.toHaveProperty("userId");
     expect(playerState.submissions).toHaveLength(1);
     expect(playerState.submissions[0].status).toBe("approved");
+    expect(playerState.submissions[0].submittedBy).toBe(playerJoinBody.data.id);
+    expect(playerState.submissions[0].submittedBy).not.toContain("session");
 
     const markSubmitted = await postJson(
       "/api/games/CF-TEST/actions",
@@ -194,6 +264,19 @@ describe("Cloudflare game room", () => {
       await get("/api/games/CF-TEST", OTHER_COOKIE)
     ).json<GameState>();
     expect(otherState.submissions).toEqual([]);
+
+    const deletion = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
+      action: "deletePlayerData",
+      payload: { membershipId: playerJoinBody.data.id },
+    });
+    expect(deletion.status).toBe(200);
+    expect(await get(`/api/games/CF-TEST/proofs/${proofBody.data.id}`, HOST_COOKIE))
+      .toHaveProperty("status", 404);
+    const deletedPlayerState = await (
+      await get("/api/games/CF-TEST", PLAYER_COOKIE)
+    ).json<GameState>();
+    expect(deletedPlayerState.membership).toBeNull();
+    expect(deletedPlayerState.submissions).toEqual([]);
 
     const crossSiteAction = await SELF_FETCH(
       `${ORIGIN}/api/games/CF-TEST/actions`,
@@ -248,7 +331,7 @@ describe("Cloudflare game room", () => {
     const latePlayerCookie = "scavenger_session=ffa-player-session-000000003";
 
     expect((await postJson("/api/games/FFA-TEST/host", hostCookie, {
-      pin: "2468",
+      pin: "24682468",
       displayName: "Primary Host",
     })).status).toBe(200);
     const initial = await (await get("/api/games/FFA-TEST", hostCookie)).json<GameState>();
@@ -305,10 +388,353 @@ describe("Cloudflare game room", () => {
     expect(lateJoin.status).toBe(409);
   });
 
+  it("limits rapid joins from one shared network without consuming host seats", async () => {
+    const hostCookie = "scavenger_session=burst-host-session-0000000001";
+    expect((await postJson("/api/games/BURST-TEST/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Burst Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/BURST-TEST", hostCookie)
+    ).json<GameState>();
+    expect((await postJson("/api/games/BURST-TEST/actions", hostCookie, {
+      action: "configureGame",
+      payload: { gameId: initial.game.id, template: "quick" },
+    })).status).toBe(200);
+    const configured = await (
+      await get("/api/games/BURST-TEST", hostCookie)
+    ).json<GameState>();
+
+    for (let index = 0; index < 50; index += 1) {
+      const cookie = `scavenger_session=burst-player-session-${String(index).padStart(4, "0")}`;
+      const response = await workerFetch(`${ORIGIN}/api/games/BURST-TEST/join`, {
+        method: "POST",
+        headers: {
+          cookie,
+          "x-forwarded-for": "198.51.100.250",
+          origin: ORIGIN,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          gameId: configured.game.id,
+          groupId: configured.groups[0].id,
+          displayName: `Player ${index + 1}`,
+        }),
+      });
+      expect(response.status).toBe(200);
+    }
+
+    const limited = await workerFetch(`${ORIGIN}/api/games/BURST-TEST/join`, {
+      method: "POST",
+      headers: {
+        cookie: "scavenger_session=burst-player-session-0050",
+        "x-forwarded-for": "198.51.100.250",
+        origin: ORIGIN,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        gameId: configured.game.id,
+        groupId: configured.groups[0].id,
+        displayName: "Player 51",
+      }),
+    });
+    expect(limited.status).toBe(429);
+
+    const hostState = await (
+      await get("/api/games/BURST-TEST", hostCookie)
+    ).json<GameState>();
+    expect(hostState.memberships).toHaveLength(51);
+  });
+
+  it("uses separate browser and school-network room creation ceilings", async () => {
+    const browserCookie = "scavenger_session=quota-browser-session-0000001";
+    const networkIp = "198.51.100.240";
+
+    for (let index = 0; index < 10; index += 1) {
+      const response = await postJsonFromNetwork(
+        `/api/games/QUOTA-${String(index).padStart(2, "0")}/host`,
+        browserCookie,
+        networkIp,
+        {
+          pin: "24682468",
+          displayName: "Quota Host",
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const browserLimited = await postJsonFromNetwork(
+      "/api/games/QUOTA-10/host",
+      browserCookie,
+      networkIp,
+      {
+        pin: "24682468",
+        displayName: "Quota Host",
+      },
+    );
+    expect(browserLimited.status).toBe(429);
+
+    const otherBrowser = await postJsonFromNetwork(
+      "/api/games/QUOTA-OTHER/host",
+      "scavenger_session=quota-other-session-00000001",
+      networkIp,
+      {
+        pin: "24682468",
+        displayName: "Other Host",
+      },
+    );
+    expect(otherBrowser.status).toBe(200);
+  });
+
+  it("supports three teachers and a full class behind one school network", async () => {
+    const networkIp = "198.51.100.241";
+    const roomCodes = ["SCHOOL-A", "SCHOOL-B", "SCHOOL-C"];
+    const teacherCookies = roomCodes.map(
+      (_, index) =>
+        `scavenger_session=school-teacher-session-${String(index).padStart(8, "0")}`,
+    );
+
+    for (const [index, roomCode] of roomCodes.entries()) {
+      expect((await postJsonFromNetwork(
+        `/api/games/${roomCode}/host`,
+        teacherCookies[index],
+        networkIp,
+        {
+          pin: "24682468",
+          displayName: `Teacher ${index + 1}`,
+        },
+      )).status).toBe(200);
+    }
+
+    const firstRoom = await (
+      await get(`/api/games/${roomCodes[0]}`, teacherCookies[0])
+    ).json<GameState>();
+    expect((await postJson(
+      `/api/games/${roomCodes[0]}/actions`,
+      teacherCookies[0],
+      {
+        action: "configureGame",
+        payload: { gameId: firstRoom.game.id, template: "classroom" },
+      },
+    )).status).toBe(200);
+    const configured = await (
+      await get(`/api/games/${roomCodes[0]}`, teacherCookies[0])
+    ).json<GameState>();
+
+    for (let index = 0; index < 30; index += 1) {
+      const studentCookie =
+        `scavenger_session=school-student-session-${String(index).padStart(8, "0")}`;
+      const response = await postJsonFromNetwork(
+        `/api/games/${roomCodes[0]}/join`,
+        studentCookie,
+        networkIp,
+        {
+          gameId: configured.game.id,
+          groupId: configured.groups[index % configured.groups.length].id,
+          displayName: `Student ${index + 1}`,
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const classState = await (
+      await get(`/api/games/${roomCodes[0]}`, teacherCookies[0])
+    ).json<GameState>();
+    expect(classState.memberships).toHaveLength(31);
+  });
+
+  it("throttles one PIN guesser without locking out a shared school network", async () => {
+    const hostCookie = "scavenger_session=pin-host-session-00000000001";
+    const networkIp = "198.51.100.230";
+    expect((await postJsonFromNetwork("/api/games/PIN-TEST/host", hostCookie, networkIp, {
+      pin: "24682468",
+      displayName: "PIN Host",
+    })).status).toBe(200);
+
+    const guesserCookie = "scavenger_session=pin-guesser-session-0000001";
+    for (let index = 0; index < 5; index += 1) {
+      const response = await postJsonFromNetwork(
+        "/api/games/PIN-TEST/host",
+        guesserCookie,
+        networkIp,
+        {
+          pin: "00000000",
+          displayName: "Guesser",
+        },
+      );
+      expect(response.status).toBe(403);
+    }
+    expect((await postJsonFromNetwork(
+      "/api/games/PIN-TEST/host",
+      guesserCookie,
+      networkIp,
+      {
+        pin: "00000000",
+        displayName: "Guesser",
+      },
+    )).status).toBe(429);
+
+    expect((await postJsonFromNetwork(
+      "/api/games/PIN-TEST/host",
+      "scavenger_session=pin-teacher-session-0000001",
+      networkIp,
+      {
+        pin: "24682468",
+        displayName: "Second Teacher",
+      },
+    )).status).toBe(200);
+  });
+
+  it("bounds JSON actions, live sockets, and member mutation bursts", async () => {
+    const hostCookie = "scavenger_session=limits-host-session-000000001";
+    expect((await postJson("/api/games/LIMITS-TEST/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Limits Host",
+    })).status).toBe(200);
+    const state = await (
+      await get("/api/games/LIMITS-TEST", hostCookie)
+    ).json<GameState>();
+
+    const oversizedJson = await workerFetch(
+      `${ORIGIN}/api/games/LIMITS-TEST/actions`,
+      {
+        method: "POST",
+        headers: {
+          cookie: hostCookie,
+          "x-forwarded-for": testClientIp(hostCookie),
+          origin: ORIGIN,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "updateGame",
+          payload: {
+            gameId: state.game.id,
+            padding: "x".repeat(64 * 1024),
+          },
+        }),
+      },
+    );
+    expect(oversizedJson.status).toBe(413);
+
+    const sockets: WebSocket[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const response = await getWebSocket("/api/games/LIMITS-TEST/ws", hostCookie);
+      expect(response.status).toBe(101);
+      const socket = (response as Response & { webSocket?: WebSocket }).webSocket;
+      expect(socket).toBeDefined();
+      (socket as WebSocket & { accept: () => void }).accept();
+      sockets.push(socket!);
+    }
+    expect((await getWebSocket("/api/games/LIMITS-TEST/ws", hostCookie)).status)
+      .toBe(429);
+
+    for (let index = 0; index < 180; index += 1) {
+      const response = await postJson("/api/games/LIMITS-TEST/actions", hostCookie, {
+        action: "updateGame",
+        payload: {
+          gameId: state.game.id,
+          patch: { lobbyOpen: index % 2 === 0 },
+        },
+      });
+      expect(response.status).toBe(200);
+    }
+    expect((await postJson("/api/games/LIMITS-TEST/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: state.game.id,
+        patch: { lobbyOpen: true },
+      },
+    })).status).toBe(429);
+
+    sockets.forEach((socket) => socket.close(1000, "Test complete"));
+  });
+
+  it("rehearses leaked-code containment, photo deletion, and room shutdown", async () => {
+    const hostCookie = "scavenger_session=incident-host-session-00000001";
+    const studentCookie = "scavenger_session=incident-student-session-00001";
+    const lateCookie = "scavenger_session=incident-late-session-00000001";
+
+    expect((await postJson("/api/games/INCIDENT-TEST/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Incident Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/INCIDENT-TEST", hostCookie)
+    ).json<GameState>();
+    expect((await postJson("/api/games/INCIDENT-TEST/actions", hostCookie, {
+      action: "configureGame",
+      payload: { gameId: initial.game.id, template: "classic" },
+    })).status).toBe(200);
+    const configured = await (
+      await get("/api/games/INCIDENT-TEST", hostCookie)
+    ).json<GameState>();
+    const groupId = configured.groups[0].id;
+
+    const joined = await postJson(
+      "/api/games/INCIDENT-TEST/join",
+      studentCookie,
+      {
+        gameId: configured.game.id,
+        groupId,
+        displayName: "Student",
+      },
+    );
+    expect(joined.status).toBe(200);
+    const membership = await joined.json<{ data: { id: string } }>();
+    expect((await postJson("/api/games/INCIDENT-TEST/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: configured.game.id,
+        patch: { boardHidden: false, lobbyOpen: false },
+      },
+    })).status).toBe(200);
+
+    const taskId = configured.boardAssignments.find(
+      (assignment) => assignment.groupId === groupId,
+    )?.taskId;
+    expect(taskId).toBeDefined();
+    const proof = await SELF_FETCH(`${ORIGIN}/api/games/INCIDENT-TEST/proofs`, {
+      method: "POST",
+      headers: {
+        cookie: studentCookie,
+        origin: ORIGIN,
+        "content-type": "image/png",
+        "x-file-name": "incident.png",
+        "x-game-id": configured.game.id,
+        "x-group-id": groupId,
+        "x-task-id": taskId!,
+      },
+      body: VALID_PNG_BYTES,
+    });
+    expect(proof.status).toBe(200);
+    const proofBody = await proof.json<{ data: { id: string } }>();
+
+    expect((await postJson("/api/games/INCIDENT-TEST/join", lateCookie, {
+      gameId: configured.game.id,
+      groupId,
+      displayName: "Unexpected visitor",
+    })).status).toBe(409);
+
+    expect((await postJson("/api/games/INCIDENT-TEST/actions", hostCookie, {
+      action: "deletePlayerData",
+      payload: { membershipId: membership.data.id },
+    })).status).toBe(200);
+    expect((await get(
+      `/api/games/INCIDENT-TEST/proofs/${proofBody.data.id}`,
+      hostCookie,
+    )).status).toBe(404);
+
+    expect((await postJson("/api/games/INCIDENT-TEST/actions", hostCookie, {
+      action: "abandonGameLobby",
+      payload: { gameId: configured.game.id },
+    })).status).toBe(200);
+    expect((await get("/api/games/INCIDENT-TEST", hostCookie)).status).toBe(404);
+  });
+
   it("applies every curated game kit as an editable room copy", async () => {
     const hostCookie = "scavenger_session=kit-host-session-000000000001";
     expect((await postJson("/api/games/KIT-TEST/host", hostCookie, {
-      pin: "2468",
+      pin: "24682468",
       displayName: "Template Host",
     })).status).toBe(200);
     const initial = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
@@ -366,7 +792,7 @@ describe("Cloudflare game room", () => {
     const hostCookie = "scavenger_session=template-create-host-00000001";
     const template = GAME_KITS.find((kit) => kit.id === "birthday-party")!;
     const response = await postJson("/api/games/TEMPLATE-START/host", hostCookie, {
-      pin: "8642",
+      pin: "86428642",
       displayName: "Party Host",
       templateId: template.id,
     });
@@ -388,7 +814,7 @@ describe("Cloudflare game room", () => {
   it("rejects invalid creation templates without leaving a room behind", async () => {
     const hostCookie = "scavenger_session=invalid-template-host-000001";
     const response = await postJson("/api/games/BAD-TEMPLATE/host", hostCookie, {
-      pin: "8642",
+      pin: "86428642",
       displayName: "Template Host",
       templateId: "not-a-template",
     });
@@ -398,12 +824,17 @@ describe("Cloudflare game room", () => {
       error: "Choose a valid game template.",
     });
     expect((await get("/api/games/BAD-TEMPLATE", hostCookie)).status).toBe(404);
+    expect((await postJson("/api/games/BAD-TEMPLATE/host", hostCookie, {
+      pin: "86428642",
+      displayName: "Template Host",
+      templateId: "quick",
+    })).status).toBe(200);
   });
 
   it("protects a started hunt from template replacement", async () => {
     const hostCookie = "scavenger_session=started-template-host-00001";
     expect((await postJson("/api/games/LOCKED-TEMPLATE/host", hostCookie, {
-      pin: "8642",
+      pin: "86428642",
       displayName: "Template Host",
       templateId: "quick",
     })).status).toBe(200);
@@ -448,7 +879,7 @@ describe("Cloudflare game room", () => {
     const hostCookie = "scavenger_session=manage-host-session-00000001";
     const playerCookie = "scavenger_session=manage-player-session-000001";
     expect((await postJson("/api/games/MANAGE-TEST/host", hostCookie, {
-      pin: "1357",
+      pin: "13571357",
       displayName: "Owner",
     })).status).toBe(200);
     const initial = await (await get("/api/games/MANAGE-TEST", hostCookie)).json<GameState>();
@@ -498,12 +929,40 @@ function get(path: string, cookie: string) {
   });
 }
 
+function getWebSocket(path: string, cookie: string) {
+  return workerFetch(`${ORIGIN}${path}`, {
+    headers: {
+      cookie,
+      "x-forwarded-for": testClientIp(cookie),
+      Upgrade: "websocket",
+    },
+  });
+}
+
 function postJson(path: string, cookie: string, body: unknown) {
   return workerFetch(`${ORIGIN}${path}`, {
     method: "POST",
     headers: {
       cookie,
       "x-forwarded-for": testClientIp(cookie),
+      origin: ORIGIN,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function postJsonFromNetwork(
+  path: string,
+  cookie: string,
+  networkIp: string,
+  body: unknown,
+) {
+  return workerFetch(`${ORIGIN}${path}`, {
+    method: "POST",
+    headers: {
+      cookie,
+      "x-forwarded-for": networkIp,
       origin: ORIGIN,
       "content-type": "application/json",
     },
@@ -538,9 +997,9 @@ type GameState = {
   groups: Array<{ id: string; name: string }>;
   tasks: Array<{ id: string; title: string }>;
   boardAssignments: Array<{ groupId: string; taskId: string; slotOrder: number }>;
-  membership: { role: string } | null;
+  membership: { id: string; role: string } | null;
   memberships: Array<{ id: string; isOwner?: boolean }>;
   roster: unknown[];
-  submissions: Array<{ status: string; imagePath: string }>;
+  submissions: Array<{ status: string; imagePath: string; submittedBy: string }>;
   stops: Array<{ arriveTime: string }>;
 };

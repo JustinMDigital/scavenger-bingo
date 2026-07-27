@@ -84,6 +84,7 @@ export type StoredSubmission = {
   imagePath: string;
   imageName: string;
   contentType: string;
+  byteLength?: number;
   status: SubmissionStatus;
   createdAt: number;
   updatedAt: number;
@@ -197,7 +198,7 @@ export function createStarterRoom({
       boardSize: 5,
       boardMode: "randomized",
       freeSpace: true,
-      proofMode: "required",
+      proofMode: "none",
       approvalMode: "host",
       timerMode: "none",
       timerDurationMinutes: 60,

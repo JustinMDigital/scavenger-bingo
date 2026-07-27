@@ -20,13 +20,17 @@ live room to use a Durable Object for coordinated state and live updates.
 
 3. Remove the old `.env.local` file if it only contains Supabase settings. It is
    ignored by Git and no longer used by the app.
-4. Verify the complete local release:
+4. Set `VITE_SUPPORT_EMAIL` to the monitored public support/privacy address,
+   either in the deployment environment or an ignored
+   `.env.production.local` file. The deploy command refuses to publish without
+   a valid address.
+5. Verify the complete local release:
 
    ```sh
    npm run check
    ```
 
-5. Publish the website and backend:
+6. Publish the website and backend:
 
    ```sh
    npm run deploy
@@ -40,19 +44,29 @@ from the project's **Settings > Domains & Routes** page, but is optional.
 
 - Rooms last seven days, then their game data and proof photos are deleted.
 - Abandoning a room deletes it immediately.
-- At most 40 rooms can be active at once.
-- One internet connection can create at most two rooms per day.
+- At most 100 confirmed rooms can be active at once.
+- Creation first uses a five-minute reservation. Failed setup does not consume a
+  seven-day room slot.
+- A browser can create at most 10 rooms per day. A separate 100-room
+  shared-network safety ceiling prevents one school IP from representing one
+  teacher.
 - A room can have at most eight teams or 100 individual participants.
-- Proof photos are compressed in the browser and capped at 500 KB.
+- Proof photos are re-encoded in the browser to remove metadata, capped at
+  500 KB each, validated as JPG/PNG/WebP, bounded by image dimensions, and
+  capped at 25 MB total per room.
 - Proofs are private to their team or individual board and the host.
-- Host access uses a 4-32 character PIN stored only as a one-way hash.
+- New host access uses a generated eight-digit PIN stored only as a salted
+  one-way hash. Existing legacy rooms may still reopen with a four-character
+  PIN. Failed-claim limits persist across Worker restarts.
+- Students receive only their own team roster, and hidden boards do not return
+  tasks before the host reveals them.
+- JSON and proof request bodies have application-level streaming limits.
 - Live updates use sleeping WebSocket connections so idle rooms do not keep a
-  server running.
+  server running, with per-student and per-room connection caps.
 
-At the configured maximum, proof storage remains below the free account's 5 GB
-Durable Object storage ceiling. Cloudflare's current free allowance is 100,000
-Worker requests and 100,000 Durable Object requests per day; exceeding a free
-limit makes additional operations fail instead of creating usage charges.
+Before every release, compare these application limits with the current
+Cloudflare account plan and platform limits. Cloudflare quotas and pricing can
+change; do not treat old numbers in a release note as current evidence.
 
 Current pricing references:
 
@@ -63,12 +77,14 @@ Current pricing references:
 ## What is intentionally temporary
 
 This is an event-room service, not permanent photo storage. There are no backups
-and expired or abandoned rooms cannot be restored. Players should save any proof
-photos they want to keep before the room expires.
+and expired or abandoned rooms cannot be restored. Only hosts can export review
+copies. Any exported local or Google Drive copy is outside room expiry and must
+be handled under the host organization's policy.
 
 ## Routine ownership
 
 There is no database to pause, migration service to operate, or storage bucket to
 clean manually. Cloudflare handles the runtime and automatically wakes a room
-when it receives traffic. The only expected maintenance is publishing app updates
-and occasionally checking the free-usage dashboard if public traffic grows.
+when it receives traffic. Expected maintenance includes publishing app updates,
+checking logs and creation rejections, and monitoring Durable Object errors and
+storage/capacity as documented in `OPERATIONS.md`.

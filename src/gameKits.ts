@@ -6,7 +6,8 @@ export type GameKitId =
   | "birthday-party"
   | "city-explorer"
   | "office-team-building"
-  | "kids-indoor";
+  | "kids-indoor"
+  | "classroom";
 
 export type GameKitTask = {
   id: string;
@@ -123,7 +124,7 @@ const officeTasks = tasks([
 ]);
 
 const kidsIndoorTasks = tasks([
-  ["silly-team-photo", "Silly Team Photo", "Take a photo with everyone's silliest face.", "Camera"],
+  ["silly-team-name", "Silly Team Name", "Invent the silliest school-appropriate team name.", "Smile"],
   ["something-red", "Something Red", "Find something red.", "Badge"],
   ["soft-thing", "Something Soft", "Find something soft to touch.", "Cloud"],
   ["round-thing", "Something Round", "Find something shaped like a circle.", "Circle"],
@@ -138,10 +139,35 @@ const kidsIndoorTasks = tasks([
   ["happy-dance", "Happy Dance", "Show your team's happiest dance move.", "Smile"],
   ["helping-hands", "Helping Hands", "Do something helpful together.", "HeartHandshake"],
   ["rainbow-colors", "Rainbow Colors", "Find three different bright colors.", "Palette"],
-  ["winning-pose", "Winning Pose", "Take one final superhero team pose.", "Trophy"],
+  ["winning-cheer", "Winning Cheer", "Invent one final quiet superhero cheer.", "Trophy"],
 ]);
 
 export const GAME_KITS: readonly GameKit[] = [
+  {
+    id: "classroom",
+    name: "Classroom Starter",
+    gameName: "Classroom Scavenger Bingo",
+    category: "Schools",
+    setting: "Classroom or library",
+    ageLabel: "Students",
+    summary: "A no-photo classroom game with simple observation and teamwork prompts.",
+    detail: "Shared 3×3 boards. Students mark finds without uploading photos.",
+    featured: true,
+    searchTags: ["school", "teacher", "student", "classroom", "library", "no photo"],
+    playerLabel: "2 teams",
+    durationLabel: "30 min",
+    playMode: "teams",
+    winCondition: "bingo",
+    boardSize: 3,
+    boardMode: "shared",
+    freeSpace: true,
+    proofMode: "none",
+    approvalMode: "automatic",
+    timerMode: "duration",
+    timerDurationMinutes: 30,
+    teamCount: 2,
+    tasks: kidsIndoorTasks,
+  },
   {
     id: "quick",
     name: "Quick Bingo",
@@ -270,7 +296,7 @@ export const GAME_KITS: readonly GameKit[] = [
     setting: "Home or classroom",
     ageLabel: "Kids and families",
     summary: "Simple, safe prompts for homes, classrooms, or community rooms.",
-    detail: "Shared 3×3 boards with optional photos.",
+    detail: "Shared 3×3 boards with no photo uploads.",
     featured: true,
     searchTags: ["kids", "children", "family", "classroom", "home", "indoor"],
     playerLabel: "2 teams",
@@ -280,7 +306,7 @@ export const GAME_KITS: readonly GameKit[] = [
     boardSize: 3,
     boardMode: "shared",
     freeSpace: true,
-    proofMode: "optional",
+    proofMode: "none",
     approvalMode: "automatic",
     timerMode: "duration",
     timerDurationMinutes: 30,

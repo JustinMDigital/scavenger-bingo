@@ -169,6 +169,11 @@ export function PlayerSlidesExport({
             Create a presentation with your team, completed prompts, photos,
             credits, and the items that still need work.
           </p>
+          <p className="slides-export-privacy-note">
+            Google access is requested only when you create the presentation. The
+            exported copy stays in your Google Drive until you delete it.{" "}
+            <a href="/privacy">Privacy details</a>
+          </p>
           <div className="player-slides-export-summary" aria-label="Export summary">
             <span>
               <strong>{model.submittedCount}</strong> submitted

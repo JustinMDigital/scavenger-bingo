@@ -319,28 +319,28 @@ export async function createPlayerSlidesDeck({
     total: photoItems.length,
   });
 
-  await Promise.all(
-    photoItems.map(async (item) => {
-      const submission = item.submission;
+  // Decode one proof at a time so a full classroom board cannot make a
+  // lower-memory Chromebook hold several large decoded images concurrently.
+  for (const item of photoItems) {
+    const submission = item.submission;
 
-      if (!submission) {
-        return;
-      }
+    if (!submission) {
+      continue;
+    }
 
-      try {
-        photos.set(submission.id, await loadSubmissionImage(submission));
-      } catch {
-        warnings.push(`${item.task.title}: photo unavailable`);
-      } finally {
-        completedPhotos += 1;
-        onProgress?.({
-          completed: completedPhotos,
-          label: "Preparing photos",
-          total: photoItems.length,
-        });
-      }
-    }),
-  );
+    try {
+      photos.set(submission.id, await loadSubmissionImage(submission));
+    } catch {
+      warnings.push(`${item.task.title}: photo unavailable`);
+    } finally {
+      completedPhotos += 1;
+      onProgress?.({
+        completed: completedPhotos,
+        label: "Preparing photos",
+        total: photoItems.length,
+      });
+    }
+  }
 
   let boardImage: string | null = null;
   onProgress?.({ label: "Capturing board" });

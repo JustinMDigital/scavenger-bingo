@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Event players can compete in teams or as individuals. They may be moving between locations, playing in one venue, checking a shared game state quickly, or coordinating while time is limited. A primary host chooses the game structure and can add co-hosts, while players focus on completing their own board.
+Teachers and event hosts can run temporary games for students or other invited players. Players can compete in teams or as individuals, including on shared school devices. A primary host chooses the game structure and can add co-hosts, while players focus on completing only their own board.
 
 ## Product Purpose
 
@@ -22,7 +22,7 @@ Ease of use is the top product priority. New features should fit the existing pl
 
 ## Game Template Library
 
-Hosts can begin with a curated game kit that combines recommended rules, teams, timing, and a complete task pool. Applying a template copies it into the temporary room; the host can then change any setting or task without affecting the original template. The initial library covers quick general play, individual play, birthday parties, city exploration, office team-building, and indoor games for kids.
+Hosts can begin with a curated game kit that combines recommended rules, teams, timing, and a complete task pool. Applying a template copies it into the temporary room; the host can then change any setting or task without affecting the original template. The initial library covers a no-photo classroom starter, quick general play, individual play, birthday parties, city exploration, office team-building, and a no-photo indoor game for kids.
 
 Templates live in a public, searchable library rather than inside the room setup form. Each template has its own page where a host can understand the audience, setting, timing, rules, board size, and task list before starting. A host may create a new room directly from that page. During pre-game setup, the room links back to the same library so the host can safely replace the room setup after a clear warning.
 
@@ -55,10 +55,16 @@ Target WCAG AA. Completion states must be color-blind safe and should not rely o
 The public release is a temporary event-room service hosted as one Cloudflare
 project. Website files, room logic, live updates, temporary data, and proof
 photos deploy together. Rooms expire after seven days and are deliberately
-bounded so the app can operate inside Cloudflare's free plan without a separate
-database or routinely maintained server. Proof photos are not a permanent
-archive and the product should say so wherever users might reasonably expect
-long-term storage.
+bounded so the app can operate without a separate database or routinely
+maintained server. The current Cloudflare account plan must be checked before
+each release. Proof photos are not a permanent archive and the product should
+say so wherever users might reasonably expect long-term storage.
+
+Blank rooms and school-oriented templates start without photo uploads. Turning
+photos on is a deliberate choice that requires a school or participant approval
+acknowledgment. Students can leave and clear shared-device data; hosts can
+delete one student's membership, submissions, and proofs without deleting the
+whole class. Full rosters and permanent exports are host-only.
 
 ## Flexible Game Rules
 
@@ -68,5 +74,5 @@ long-term storage.
 - Proof: required, optional, or none; host review or automatic approval.
 - Timing: no timer, a duration countdown with pause/add-time controls, or scheduled stops.
 - Lobby: open or closed; manual team choice or balanced automatic assignment.
-- People: add, rename, recolor, reorder, and remove teams; move or kick players; promote co-hosts and transfer primary-host ownership.
+- People: add, rename, recolor, reorder, and remove teams; move players or delete one player's room data; promote co-hosts and transfer primary-host ownership.
 - Sharing: room code, direct player link, join QR code, and a projector-friendly join screen with a live player roster.

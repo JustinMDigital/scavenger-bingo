@@ -101,6 +101,7 @@ import {
   createProofDownloadUrl,
   joinGame,
   kickPlayerMembership,
+  leaveGame,
   loadGameState,
   movePlayerMembership,
   promotePlayerMembership,
@@ -122,6 +123,7 @@ import {
 import {
   createPendingProofUpload,
   deletePendingProofUpload,
+  deletePendingProofUploadsForMembership,
   readPendingProofUploads,
   savePendingProofUpload,
 } from "./pendingProofStore";
@@ -169,6 +171,8 @@ type TimerTarget = {
 type StoredPlayer = {
   name: string;
   groupId: string;
+  gameId?: string;
+  membershipId?: string;
 };
 
 type JoinRequest = {
@@ -232,6 +236,10 @@ const PROOF_MAX_IMAGE_EDGE = 1280;
 const PROOF_COMPRESSION_QUALITIES = [0.78, 0.68, 0.58, 0.48, 0.38];
 const GAME_CODE_PATTERN = /^[A-Z0-9-]{3,24}$/;
 const GAME_CODE_ERROR = "Game code must be 3-24 letters, numbers, or hyphens.";
+const CONFIGURED_SUPPORT_EMAIL = import.meta.env.VITE_SUPPORT_EMAIL?.trim() ?? "";
+const SUPPORT_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(CONFIGURED_SUPPORT_EMAIL)
+  ? CONFIGURED_SUPPORT_EMAIL
+  : "";
 
 const ICONS: Record<string, LucideIcon> = {
   Armchair,
@@ -298,7 +306,9 @@ const TASK_ICON_OPTIONS = Object.keys(ICONS).sort((first, second) =>
 );
 
 export default function App() {
-  const storedPlayer = useMemo(() => readStoredPlayer(), []);
+  const [storedPlayer, setStoredPlayer] = useState<StoredPlayer | null>(
+    () => readStoredPlayer(),
+  );
   const initialGameCode = useMemo(() => readInitialGameCode(), []);
   const [path, setPath] = useState(() => window.location.pathname);
   const isHostRoute = path === "/host" || path.startsWith("/host/");
@@ -306,6 +316,7 @@ export default function App() {
   const selectedCreationTemplate = getGameKit(readTemplateIdFromUrl());
   const [gameCode, setGameCode] = useState(initialGameCode);
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const gameStateRef = useRef<GameState | null>(null);
   const [isLoading, setIsLoading] = useState(initialGameCode.length > 0);
   const [error, setError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState("");
@@ -343,18 +354,47 @@ export default function App() {
 
       try {
         const nextState = await loadGameState(requestedCode);
-        setGameState((previousState) => {
-          if (
-            previousState?.membership?.role === "player" &&
-            !nextState.membership &&
-            previousState.game.id === nextState.game.id
-          ) {
-            clearStoredPlayer();
-            setToast("You were removed from the lobby");
-          }
+        const previousState = gameStateRef.current;
+        const previousMembership =
+          previousState?.membership?.role === "player" &&
+          !nextState.membership &&
+          previousState.game.id === nextState.game.id
+            ? previousState.membership
+            : null;
+        const savedPlayer = readStoredPlayer();
+        const savedMembershipId =
+          !nextState.membership && savedPlayer?.gameId === nextState.game.id
+            ? savedPlayer.membershipId
+            : undefined;
+        const removedMembershipId = previousMembership?.id ?? savedMembershipId;
 
-          return nextState;
-        });
+        if (!nextState.membership && savedPlayer) {
+          clearStoredPlayer();
+          setStoredPlayer(null);
+        }
+        if (removedMembershipId) {
+          setPendingProofs((proofs) =>
+            proofs.filter(
+              (proof) =>
+                proof.gameId !== nextState.game.id ||
+                proof.membershipId !== removedMembershipId,
+            ),
+          );
+          try {
+            await deletePendingProofUploadsForMembership(
+              nextState.game.id,
+              removedMembershipId,
+            );
+          } catch (caughtError) {
+            console.warn("Could not clear saved proof photos after removal.", caughtError);
+          }
+        }
+        if (previousMembership || savedMembershipId) {
+          setToast("You were removed from the lobby and this device was cleared");
+        }
+
+        gameStateRef.current = nextState;
+        setGameState(nextState);
         setGameCode(nextState.game.code);
         storeGameCode(nextState.game.code);
         syncGameCodeToUrl(nextState.game.code);
@@ -374,6 +414,10 @@ export default function App() {
     },
     [gameCode],
   );
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -437,6 +481,9 @@ export default function App() {
     }
 
     return subscribeToGameChanges(loadedGameId, () => {
+      if (gameStateRef.current?.game.id !== loadedGameId) {
+        return;
+      }
       void refreshGameState(loadedGameCode, { silent: true });
     });
   }, [
@@ -504,10 +551,18 @@ export default function App() {
     return pendingProofs.filter(
       (proof) =>
         proof.gameId === gameState.game.id &&
+        proof.membershipId === membership.id &&
         proof.groupId === membership.groupId &&
         currentTaskIds.has(proof.taskId),
     );
-  }, [currentGroupTasks, gameState, membership?.groupId, membership?.role, pendingProofs]);
+  }, [
+    currentGroupTasks,
+    gameState,
+    membership?.groupId,
+    membership?.id,
+    membership?.role,
+    pendingProofs,
+  ]);
   const selectedTask =
     currentGroupTasks.find((task) => task.id === selectedTaskId) ?? null;
   const activeStopIndex =
@@ -647,10 +702,14 @@ export default function App() {
         displayName: request.name,
       });
 
-      storePlayer({
+      const nextStoredPlayer: StoredPlayer = {
         name: request.name.trim(),
         groupId: joinedMembership.groupId ?? joinedMembership.id,
-      });
+        gameId: loadedState.game.id,
+        membershipId: joinedMembership.id,
+      };
+      storePlayer(nextStoredPlayer);
+      setStoredPlayer(nextStoredPlayer);
       storeGameCode(loadedState.game.code);
       setGameCode(loadedState.game.code);
       await refreshGameState(loadedState.game.code, { silent: true });
@@ -719,6 +778,52 @@ export default function App() {
     }
   }
 
+  async function handleLeaveGame() {
+    if (!gameState || membership?.role !== "player") return;
+    if (
+      !window.confirm(
+        "Leave this room and delete your submissions, proof photos, saved nickname, and queued photos from this device?",
+      )
+    ) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const leavingMembership = membership;
+      const result = await leaveGame(gameState.game.id);
+      await deletePendingProofUploadsForMembership(
+        gameState.game.id,
+        leavingMembership.id,
+      );
+      setPendingProofs((current) =>
+        current.filter(
+          (proof) =>
+            proof.gameId !== gameState.game.id ||
+            proof.membershipId !== leavingMembership.id,
+        ),
+      );
+      clearStoredPlayer();
+      setStoredPlayer(null);
+      clearStoredGameCode();
+      setGameCode("");
+      setGameState(null);
+      setSelectedTaskId("");
+      window.history.pushState({}, "", "/");
+      setPath("/");
+      setToast(
+        result.deletedSubmissions > 0
+          ? `Left room and deleted ${result.deletedSubmissions} submissions`
+          : "Left room and cleared this device",
+      );
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Could not leave the room");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function updateFailedPendingProof(
     proof: PendingProofUpload,
     message: string,
@@ -782,6 +887,7 @@ export default function App() {
       file,
       gameCode: gameState.game.code,
       gameId: gameState.game.id,
+      membershipId: membership.id,
       groupId: membership.groupId,
       taskId,
     });
@@ -849,6 +955,16 @@ export default function App() {
 
     if (!pendingProof) {
       setToast("Saved photo was not found");
+      return;
+    }
+    if (
+      !gameState ||
+      membership?.role !== "player" ||
+      pendingProof.gameId !== gameState.game.id ||
+      pendingProof.membershipId !== membership.id
+    ) {
+      await clearPendingProof(pendingProof.id);
+      setToast("Saved photo belonged to a different player and was cleared");
       return;
     }
 
@@ -954,12 +1070,18 @@ export default function App() {
 
     setKickingMembershipId(membershipId);
     try {
-      const kickedMembership = await kickPlayerMembership(membershipId);
+      const result = await kickPlayerMembership(membershipId);
       setGameState((currentState) =>
-        currentState ? removeMembership(currentState, kickedMembership.id) : currentState,
+        currentState
+          ? removeMembership(currentState, result.membership.id)
+          : currentState,
       );
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast("Player kicked");
+      setToast(
+        result.deletedSubmissions > 0
+          ? `Player and ${result.deletedSubmissions} submissions deleted`
+          : "Player data deleted",
+      );
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Kick failed");
@@ -1145,12 +1267,15 @@ export default function App() {
   async function handleConfirmAbandonGame() {
     if (!gameState || membership?.role !== "host") return;
 
+    const abandoningState = gameState;
+    gameStateRef.current = null;
     setIsAbandoningGame(true);
     setIsLoading(true);
     try {
       const abandonResult = await abandonGameLobby(gameState.game.id);
       clearStoredGameCode();
       clearStoredPlayer();
+      setStoredPlayer(null);
       setIsAbandonDialogOpen(false);
       setGameCode("");
       setGameState(null);
@@ -1158,10 +1283,13 @@ export default function App() {
       setSelectedHostGroupId("");
       setExpandedStopId("");
       setError("");
+      window.history.replaceState({}, "", "/host");
+      setPath("/host");
       setToast(
         `Abandoned lobby and removed ${abandonResult.removedMemberships} members`,
       );
     } catch (caughtError) {
+      gameStateRef.current = abandoningState;
       const message = getErrorMessage(caughtError);
       setError(message);
       setToast(`Abandon failed: ${message}`);
@@ -1538,6 +1666,11 @@ export default function App() {
     }
   }
 
+  if (path === "/privacy" || path === "/terms" || path === "/support") {
+    const kind = path.slice(1) as InformationPageKind;
+    return <InformationPage kind={kind} />;
+  }
+
   if (templateRoute?.scope === "public") {
     return (
       <TemplateLibraryPage
@@ -1654,7 +1787,7 @@ export default function App() {
         onTimerClick={() => setShowStopDetails((shown) => !shown)}
       />
 
-      <main id="main-content" className="main-content">
+      <main id="main-content" className="main-content" tabIndex={-1}>
         {error && (
           <div className="toast-region error-message" role="alert">
             {error}
@@ -1724,6 +1857,7 @@ export default function App() {
             <HostGate
               defaultDisplayName={storedPlayer?.name ?? ""}
               defaultGameCode={gameCode}
+              isExistingRoom
               isBusy={isLoading}
               onClaim={handleClaimHost}
             />
@@ -1742,7 +1876,9 @@ export default function App() {
             game={gameState.game}
             isTaskCardDismissed={isTaskCardDismissed}
             onDismissTaskCard={() => setIsTaskCardDismissed(true)}
+            onDiscardPendingProof={(proofId) => void clearPendingProof(proofId)}
             onBoardViewChange={setBoardView}
+            onLeave={() => void handleLeaveGame()}
             onRetryPendingProof={handleRetryPendingProof}
             onSubmitProof={handleSubmitProof}
             onCompleteTask={handleCompleteTask}
@@ -1767,6 +1903,7 @@ export default function App() {
           />
         )}
       </main>
+      <SiteFooter />
 
       {isAbandonDialogOpen && membership?.role === "host" && gameState && (
         <AbandonGameDialog
@@ -1782,6 +1919,101 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function useModalAccessibility({
+  closeDisabled = false,
+  containerRef,
+  initialFocusRef,
+  onClose,
+}: {
+  closeDisabled?: boolean;
+  containerRef: React.RefObject<HTMLElement>;
+  initialFocusRef: React.RefObject<HTMLElement>;
+  onClose: () => void;
+}) {
+  const closeDisabledRef = useRef(closeDisabled);
+  const onCloseRef = useRef(onClose);
+  closeDisabledRef.current = closeDisabled;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const modalContainer: HTMLElement = container;
+
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const siblingStates = Array.from(modalContainer.parentElement?.children ?? [])
+      .filter((element) => element !== modalContainer)
+      .map((element) => ({
+        element,
+        wasInert: element.hasAttribute("inert"),
+      }));
+    siblingStates.forEach(({ element }) => element.setAttribute("inert", ""));
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => {
+      initialFocusRef.current?.focus();
+    });
+
+    function getFocusableElements() {
+      return Array.from(
+        modalContainer.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter(
+        (element) =>
+          !element.hasAttribute("hidden") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !closeDisabledRef.current) {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusableElements = getFocusableElements();
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      if (
+        event.shiftKey &&
+        (activeElement === first || !modalContainer.contains(activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (activeElement === last || !modalContainer.contains(activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      siblingStates.forEach(({ element, wasInert }) => {
+        if (!wasInert) element.removeAttribute("inert");
+      });
+      previousFocus?.focus();
+    };
+  }, [containerRef, initialFocusRef]);
 }
 
 function HostSessionNotice({
@@ -1821,24 +2053,16 @@ function AbandonGameDialog({
   onConfirm: () => void;
 }) {
   const [confirmation, setConfirmation] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const canAbandon = confirmation === "ABANDON" && !isBusy;
 
-  useEffect(() => {
-    inputRef.current?.focus();
-
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !isBusy) {
-        onCancel();
-      }
-    }
-
-    window.addEventListener("keydown", closeOnEscape);
-
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [isBusy, onCancel]);
+  useModalAccessibility({
+    closeDisabled: isBusy,
+    containerRef: dialogRef,
+    initialFocusRef: inputRef,
+    onClose: onCancel,
+  });
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1850,17 +2074,17 @@ function AbandonGameDialog({
 
   return (
     <div
+      ref={dialogRef}
+      aria-describedby="abandon-game-description"
       aria-labelledby="abandon-game-title"
       aria-modal="true"
       className="confirmation-dialog"
       role="dialog"
     >
-      <button
-        aria-label="Cancel abandon game"
+      <div
+        aria-hidden="true"
         className="confirmation-dialog-backdrop"
-        disabled={isBusy}
-        type="button"
-        onClick={onCancel}
+        onClick={isBusy ? undefined : onCancel}
       />
       <div className="confirmation-dialog-panel is-danger">
         <div className="confirmation-dialog-header">
@@ -1870,7 +2094,7 @@ function AbandonGameDialog({
           <div>
             <p className="label">Destructive action</p>
             <h2 id="abandon-game-title">Abandon {gameCode}</h2>
-            <p>
+            <p id="abandon-game-description">
               This removes every player and host, deletes submitted proofs,
               closes this game code, and returns you to host setup.
             </p>
@@ -2003,6 +2227,7 @@ function HostSetupView({
       <a className="entry-back-link" href="/">
         Joining someone else? Enter a room code
       </a>
+      <SiteFooter />
     </main>
   );
 }
@@ -2080,6 +2305,11 @@ function GameCodeGate({
         <div>
           <h2 id="host-callout-title">Want to run the hunt?</h2>
           <p>Choose a ready-made game or build your own, then share the room code.</p>
+          <p>
+            After the host finishes the game, players can optionally create a
+            presentation in their own Google Drive. Google access is requested only
+            when a player chooses that export.
+          </p>
         </div>
         <div className="landing-host-actions">
           <a className="landing-template-link" href="/templates">
@@ -2092,6 +2322,236 @@ function GameCodeGate({
           </a>
         </div>
       </section>
+      <SiteFooter />
+    </main>
+  );
+}
+
+function SiteFooter() {
+  return (
+    <footer className="site-footer">
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/support">Support</a>
+      <span>Temporary rooms automatically expire after seven days.</span>
+    </footer>
+  );
+}
+
+type InformationPageKind = "privacy" | "terms" | "support";
+
+function InformationPage({ kind }: { kind: InformationPageKind }) {
+  const pageTitle = {
+    privacy: "Privacy",
+    terms: "Terms",
+    support: "Support",
+  }[kind];
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = `${pageTitle} | Scavenger Blackout`;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [pageTitle]);
+
+  return (
+    <main className="information-page">
+      <a className="entry-brand" href="/" aria-label="Scavenger Blackout home">
+        <span className="entry-brand-mark" aria-hidden="true"><Grid3X3 /></span>
+        <span>Scavenger Blackout</span>
+      </a>
+      {kind === "privacy" ? (
+        <article aria-labelledby="privacy-title">
+          <p className="label">Plain-language notice</p>
+          <h1 id="privacy-title">Privacy</h1>
+          <p>
+            Scavenger Blackout is a temporary classroom and event game. It has no
+            advertising, behavioral analytics, permanent student accounts, or sale of
+            personal information.
+          </p>
+          <p><strong>Last updated:</strong> July 26, 2026</p>
+          <h2>What the game uses</h2>
+          <ul>
+            <li>A first name or nickname, room membership, team, task progress, and submission status.</li>
+            <li>An HttpOnly session cookie so the browser can return to the correct room role.</li>
+            <li>Optional proof photos only when a host deliberately enables photo uploads.</li>
+            <li>One-way browser and network identifiers to limit abusive creation and PIN attempts.</li>
+          </ul>
+          <h2>Where data goes</h2>
+          <p>
+            Cloudflare runs the service and stores each temporary room and its proof
+            photos. When a player deliberately creates Google Slides, the presentation
+            is sent directly from that player’s browser to Google Drive. The presentation
+            can contain the game and team names, current team members, board progress,
+            prompts, proof photos, and the name of each photo’s submitter.
+          </p>
+          <h2>Google Drive access</h2>
+          <p>
+            Google authorization is requested only after a player selects{" "}
+            <strong>Create Google Slides</strong>. The game requests the narrow{" "}
+            <code>drive.file</code> permission to create and access files made through
+            this export. It does not list or read the player’s other Drive files.
+          </p>
+          <p>
+            The short-lived Google access token is kept only in the browser’s memory. It
+            is not saved in browser storage or sent to this service’s server. The game
+            uses the token only to create the presentation the player requested and does
+            not sell, transfer, or use Google user data for advertising or profiling.
+          </p>
+          <p>
+            Use and transfer of information received from Google APIs follows the{" "}
+            <a
+              href="https://developers.google.com/terms/api-services-user-data-policy"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Google API Services User Data Policy
+            </a>
+            , including its Limited Use requirements.
+          </p>
+          <h2>How long it stays</h2>
+          <p>
+            Room data and proof images automatically expire within seven days. A failed
+            photo upload may be saved only in that browser for retry, is separated by
+            student membership, and is removed after seven days or when the student
+            discards it or leaves.
+          </p>
+          <p>
+            A presentation created in Google Drive is a separate copy. It remains in the
+            player’s Drive after the room expires or is deleted, until the player or
+            their Google Workspace administrator deletes it. Google handles that copy
+            under the player’s account and organization policies.
+          </p>
+          <h2>Choices and deletion</h2>
+          <p>
+            Students can leave and clear the device. Hosts can delete one student’s room
+            data, reset every proof, or abandon the room immediately. Students and
+            families should ask the teacher or school that supplied the room code for a
+            deletion or access request.
+          </p>
+          {SUPPORT_EMAIL && (
+            <p>
+              The service contact for privacy, access, and deletion requests is{" "}
+              <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.
+            </p>
+          )}
+          <h2>Schools and children</h2>
+          <p>
+            The classroom starter uses no photos. A school or supervising organization
+            must decide whether its approval and family notice requirements allow any
+            optional photo activity. This page is product information, not legal advice.
+          </p>
+        </article>
+      ) : kind === "terms" ? (
+        <article aria-labelledby="terms-title">
+          <p className="label">Rules for using the service</p>
+          <h1 id="terms-title">Terms</h1>
+          <p><strong>Last updated:</strong> July 26, 2026</p>
+          <p>
+            These terms apply when you use this temporary scavenger-hunt service. If a
+            school, teacher, employer, or event organizer supplied the room, their rules
+            and policies also apply. Children should use the service only with the
+            direction of the responsible adult or organization.
+          </p>
+          <h2>Using the game responsibly</h2>
+          <p>
+            Hosts are responsible for choosing suitable prompts, supervising the
+            activity, obtaining any required participant or family approval, and deciding
+            whether photos are appropriate. Do not request or submit unsafe, unlawful, or
+            harmful material, or private information such as documents, exact locations,
+            or recognizable faces without appropriate permission.
+          </p>
+          <p>
+            Do not interfere with the service, attempt to enter rooms without permission,
+            bypass its limits, or use another person’s name, photos, or work deceptively.
+          </p>
+          <h2>Your submissions</h2>
+          <p>
+            You keep ownership of content you submit. You give the service only the
+            limited permission needed to temporarily receive, store, display, review, and
+            export that content as part of the game. You confirm that you have permission
+            to submit and export it.
+          </p>
+          <h2>Temporary rooms and exported copies</h2>
+          <p>
+            Rooms, progress, and proof photos are temporary and normally expire within
+            seven days. The service is not an archive. A Google Slides presentation is a
+            separate copy in the player’s Google Drive and is governed by Google and any
+            applicable school or organization policy. The player is responsible for
+            sharing, retaining, or deleting that exported copy.
+          </p>
+          <h2>Availability</h2>
+          <p>
+            The service may change, experience interruptions, or stop operating. To the
+            extent permitted by law, it is provided without guarantees that every room,
+            upload, or export will always be available or recoverable. A PowerPoint
+            download is offered when Google authorization or upload is unavailable, but
+            successful recovery is not guaranteed.
+          </p>
+          <h2>Questions</h2>
+          <p>
+            {SUPPORT_EMAIL ? (
+              <>
+                Contact <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a> with
+                questions about these terms.
+              </>
+            ) : (
+              <>
+                Contact the person who supplied the game link. A monitored public
+                contact is required before broad self-service release.
+              </>
+            )}
+          </p>
+          <p>
+            These terms are general product information and should be reviewed for the
+            requirements of the school, organization, and jurisdiction using the game.
+          </p>
+        </article>
+      ) : (
+        <article aria-labelledby="support-title">
+          <p className="label">Help and incidents</p>
+          <h1 id="support-title">Support</h1>
+          <h2>During a class</h2>
+          <ol>
+            <li>If a safety or privacy issue occurs, stop the activity and close the lobby.</li>
+            <li>Keep the room code and host PIN private except for the intended group.</li>
+            <li>If a student cannot join, confirm that the lobby is open and reload once.</li>
+            <li>If a photo fails, retry it or discard the saved photo; do not repeatedly select new copies.</li>
+            <li>If the room code was shared outside the class, close the lobby and create a new room.</li>
+          </ol>
+          <h2>Privacy requests</h2>
+          <p>
+            The host can use <strong>Delete data</strong> beside one student, and students
+            can use <strong>Leave and clear this device</strong>. Abandoning a room removes
+            all room data immediately.
+          </p>
+          <h2>Report a problem</h2>
+          <p>
+            {SUPPORT_EMAIL ? (
+              <>
+                Email <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a> and include
+                the room code, approximate time, device/browser, and what happened.
+              </>
+            ) : (
+              <>
+                For a pilot, contact the person who supplied the Scavenger Blackout link
+                and include the room code, approximate time, device/browser, and what
+                happened. A monitored public support address is required before broad
+                self-service school release.
+              </>
+            )}{" "}
+            Do not send a host PIN or student photo.
+          </p>
+          <h2>Accessibility</h2>
+          <p>
+            Include the device, browser, assistive technology, and the step that was
+            blocked. The game is designed for keyboard use, zoom, reduced motion, and
+            screen-reader labels.
+          </p>
+        </article>
+      )}
+      <SiteFooter />
     </main>
   );
 }
@@ -2623,13 +3083,14 @@ function JoinView({
         </label>
 
         <label className="field">
-          <span>Name</span>
+          <span>First name or nickname</span>
           <input
-            autoComplete="given-name"
+            autoComplete="off"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Your name"
+            placeholder="First name or nickname"
           />
+          <small>Avoid entering a full legal name.</small>
         </label>
 
         {!isIndividual && !isAutoAssign && <fieldset className="group-field">
@@ -2720,6 +3181,7 @@ function HostGate({
   error,
   isBusy,
   selectedTemplate,
+  isExistingRoom = false,
   onClaim,
 }: {
   defaultDisplayName: string;
@@ -2727,11 +3189,15 @@ function HostGate({
   error?: string;
   isBusy: boolean;
   selectedTemplate?: GameKit;
+  isExistingRoom?: boolean;
   onClaim: (request: HostClaimRequest) => void;
 }) {
   const [displayName, setDisplayName] = useState(defaultDisplayName || "Host");
-  const [gameCode, setGameCode] = useState(defaultGameCode);
-  const [pin, setPin] = useState("");
+  const [gameCode, setGameCode] = useState(
+    defaultGameCode || (isExistingRoom ? "" : generateRoomCode()),
+  );
+  const [pin, setPin] = useState(isExistingRoom ? "" : generateHostPin());
+  const minimumPinLength = isExistingRoom ? 4 : 8;
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2741,7 +3207,7 @@ function HostGate({
     if (
       !cleanName ||
       !isValidGameCode(normalizeGameCodeInput(cleanGameCode)) ||
-      pin.trim().length < 4
+      pin.trim().length < minimumPinLength
     ) {
       return;
     }
@@ -2760,13 +3226,15 @@ function HostGate({
         <p className="label">
           {selectedTemplate ? "Start from a template" : "Host a hunt"}
         </p>
-        <h2 id="host-title">
+        <h1 id="host-title">
           {selectedTemplate ? `Create ${selectedTemplate.name}.` : "Create or reopen a hunt."}
-        </h2>
+        </h1>
         <p>
-          {selectedTemplate
+          {isExistingRoom
+            ? "Enter the private PIN created with this room."
+            : selectedTemplate
             ? "Choose a new room code and private host PIN. You can review and edit everything before players join."
-            : "Choose a room code and private host PIN. If the room already exists, use the same PIN to reopen it."}
+            : "Use the generated room code and private host PIN, or replace them before creating the room."}
         </p>
       </div>
 
@@ -2799,6 +3267,15 @@ function HostGate({
             placeholder="FRIDAY-NIGHT"
           />
           <small id="host-room-code-help">3–24 letters, numbers, or dashes.</small>
+          {!isExistingRoom && (
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setGameCode(generateRoomCode())}
+            >
+              Generate another code
+            </button>
+          )}
         </label>
         <label className="field">
           <span>Host name</span>
@@ -2815,21 +3292,34 @@ function HostGate({
             autoComplete="one-time-code"
             aria-describedby="host-pin-help"
             inputMode="numeric"
-            minLength={4}
+            minLength={minimumPinLength}
             maxLength={32}
             type="password"
             value={pin}
             onChange={(event) => setPin(event.target.value)}
-            placeholder="4+ character PIN"
+            placeholder={isExistingRoom ? "Existing PIN" : "8-digit PIN"}
           />
-          <small id="host-pin-help">Keep this PIN—you’ll need it to host again.</small>
+          <small id="host-pin-help">
+            {isExistingRoom
+              ? "Use the PIN saved when this room was created."
+              : "Save this 8-digit PIN—you’ll need it to host again."}
+          </small>
+          {!isExistingRoom && (
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setPin(generateHostPin())}
+            >
+              Generate another PIN
+            </button>
+          )}
         </label>
         <button
           className="join-submit"
           disabled={
             !displayName.trim() ||
             !isValidGameCode(normalizeGameCodeInput(gameCode)) ||
-            pin.trim().length < 4 ||
+            pin.trim().length < minimumPinLength ||
             isBusy
           }
           type="submit"
@@ -2838,7 +3328,9 @@ function HostGate({
             ? "Opening hunt..."
             : selectedTemplate
               ? "Create game from template"
-              : "Create or open hunt"}
+              : isExistingRoom
+                ? "Open host controls"
+                : "Create hunt"}
         </button>
       </form>
     </section>
@@ -2853,7 +3345,9 @@ function GroupView({
   isBoardHidden,
   isTaskCardDismissed,
   onDismissTaskCard,
+  onDiscardPendingProof,
   onBoardViewChange,
+  onLeave,
   onRetryPendingProof,
   onSubmitProof,
   onCompleteTask,
@@ -2873,7 +3367,9 @@ function GroupView({
   isBoardHidden: boolean;
   isTaskCardDismissed: boolean;
   onDismissTaskCard: () => void;
+  onDiscardPendingProof: (proofId: string) => void;
   onBoardViewChange: (view: BoardView) => void;
+  onLeave: () => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
   onCompleteTask: (taskId: string) => void;
@@ -2957,6 +3453,7 @@ function GroupView({
             <>
               <div className="board-view-toggle" aria-label="Choose board view">
                 <button
+                  aria-pressed={boardView === "grid"}
                   className={boardView === "grid" ? "is-active" : ""}
                   type="button"
                   onClick={() => onBoardViewChange("grid")}
@@ -2965,6 +3462,7 @@ function GroupView({
                   Board
                 </button>
                 <button
+                  aria-pressed={boardView === "list"}
                   className={boardView === "list" ? "is-active" : ""}
                   type="button"
                   onClick={() => onBoardViewChange("list")}
@@ -3022,6 +3520,7 @@ function GroupView({
           isUploading={uploadingTaskId === selectedTask.id}
           isRetryingProof={pendingProofsByTask.get(selectedTask.id)?.id === retryingProofId}
           onDismiss={onDismissTaskCard}
+          onDiscardPendingProof={onDiscardPendingProof}
           onRetryPendingProof={onRetryPendingProof}
           onSubmitProof={onSubmitProof}
           onCompleteTask={onCompleteTask}
@@ -3033,6 +3532,13 @@ function GroupView({
           proofMode={game.proofMode}
         />
       )}
+      <section className="player-privacy-actions" aria-label="Shared device controls">
+        <h2>Finished on this device?</h2>
+        <p>Leave the room and delete your submissions, photos, nickname, and saved retries.</p>
+        <button className="secondary-action" type="button" onClick={onLeave}>
+          Leave and clear this device
+        </button>
+      </section>
     </div>
   );
 }
@@ -3717,14 +4223,29 @@ function HostView({
           </section>
 
           {selectedGroup && (
-            <HostLiveBoard
-              boardSize={game.boardSize}
-              group={selectedGroup}
-              onClose={() => setSelectedHostGroupId("")}
-              setSubmissionStatus={setSubmissionStatus}
-              submissions={submissions}
-              tasks={getGroupBoardTasks(selectedGroup.id, tasks, boardAssignments)}
-            />
+            <>
+              <HostLiveBoard
+                boardSize={game.boardSize}
+                group={selectedGroup}
+                onClose={() => setSelectedHostGroupId("")}
+                setSubmissionStatus={setSubmissionStatus}
+                submissions={submissions}
+                tasks={getGroupBoardTasks(selectedGroup.id, tasks, boardAssignments)}
+              />
+              {game.phase === "review" && (
+                <PlayerSlidesExport
+                  game={game}
+                  group={selectedGroup}
+                  roster={memberships}
+                  submissions={submissions}
+                  tasks={getGroupBoardTasks(
+                    selectedGroup.id,
+                    tasks,
+                    boardAssignments,
+                  )}
+                />
+              )}
+            </>
           )}
 
           <section aria-labelledby="submission-heading">
@@ -4008,6 +4529,7 @@ function GameSettingsPanel({
   });
   const [startTime, setStartTime] = useState("10:00 AM");
   const [isSaving, setIsSaving] = useState(false);
+  const [photoApprovalAcknowledged, setPhotoApprovalAcknowledged] = useState(false);
 
   useEffect(() => {
     setDraft({
@@ -4022,6 +4544,7 @@ function GameSettingsPanel({
       timerMode: game.timerMode,
       timerDurationMinutes: game.timerDurationMinutes,
     });
+    setPhotoApprovalAcknowledged(false);
   }, [game]);
 
   async function saveCustom() {
@@ -4069,16 +4592,26 @@ function GameSettingsPanel({
         <label className="field"><span>Winning</span><select value={draft.winCondition} onChange={(event) => setDraft({ ...draft, winCondition: event.target.value as Game["winCondition"] })}><option value="blackout">Blackout — every square</option><option value="bingo">Bingo — one full line</option></select></label>
         <label className="field"><span>Board size</span><select value={draft.boardSize} onChange={(event) => setDraft({ ...draft, boardSize: Number(event.target.value) as BoardSize })}><option value={3}>3 × 3</option><option value={4}>4 × 4</option><option value={5}>5 × 5</option></select></label>
         <label className="field"><span>Boards</span><select value={draft.boardMode} onChange={(event) => setDraft({ ...draft, boardMode: event.target.value as Game["boardMode"] })}><option value="randomized">Different for each</option><option value="shared">Same for everyone</option></select></label>
-        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => setDraft({ ...draft, proofMode: event.target.value as Game["proofMode"] })}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photos</option></select></label>
+        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => { const proofMode = event.target.value as Game["proofMode"]; setDraft({ ...draft, proofMode }); if (proofMode === "none") setPhotoApprovalAcknowledged(false); }}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photo uploads</option></select><small>{draft.proofMode === "none" ? "Recommended for classrooms. Students complete tasks without uploading images." : "Uploaded photos stay in the temporary room for up to seven days."}</small></label>
         <label className="field"><span>Approval</span><select value={draft.approvalMode} disabled={draft.proofMode === "none"} onChange={(event) => setDraft({ ...draft, approvalMode: event.target.value as Game["approvalMode"] })}><option value="host">Host approves</option><option value="automatic">Automatic</option></select></label>
         <label className="field"><span>Timer</span><select value={draft.timerMode} onChange={(event) => setDraft({ ...draft, timerMode: event.target.value as TimerMode })}><option value="none">No timer</option><option value="duration">Countdown</option><option value="schedule">Scheduled stops</option></select></label>
         {draft.timerMode === "duration" && <label className="field"><span>Minutes</span><input min={1} max={1440} type="number" value={draft.timerDurationMinutes} onChange={(event) => setDraft({ ...draft, timerDurationMinutes: Number(event.target.value) })} /></label>}
         {draft.timerMode === "schedule" && <label className="field"><span>First start time</span><input value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
         <label className="task-free-toggle"><input checked={draft.freeSpace} type="checkbox" onChange={(event) => setDraft({ ...draft, freeSpace: event.target.checked })} />Include a free center square when possible</label>
+        {draft.proofMode !== "none" && (
+          <label className="task-free-toggle photo-approval-toggle">
+            <input
+              checked={photoApprovalAcknowledged}
+              type="checkbox"
+              onChange={(event) => setPhotoApprovalAcknowledged(event.target.checked)}
+            />
+            I have school or participant approval to collect photos, and I will avoid faces, private documents, and exact locations unless specifically approved.
+          </label>
+        )}
       </div>
 
       <div className="host-step-actions">
-        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim()} type="button" onClick={saveCustom}>
+        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim() || (draft.proofMode !== "none" && !photoApprovalAcknowledged)} type="button" onClick={saveCustom}>
           {isSaving ? "Saving..." : "Save and continue"}
         </button>
       </div>
@@ -4167,7 +4700,7 @@ function TeamManagementPanel({
       return;
     }
 
-    const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+    const proofCount = submissionsByPlayer.get(player.id) ?? 0;
 
     if (
       proofCount > 0 &&
@@ -4184,15 +4717,15 @@ function TeamManagementPanel({
   }
 
   function handleKick(player: Membership) {
-    const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+    const proofCount = submissionsByPlayer.get(player.id) ?? 0;
     const proofNote =
       proofCount > 0
-        ? ` ${getProofCountLabel(proofCount)} will stay with the current team.`
-        : "";
+        ? ` This permanently deletes ${getProofCountLabel(proofCount)} and their photos.`
+        : " Their saved room identity will be removed.";
 
     if (
       !window.confirm(
-        `Kick ${player.displayName} from this lobby?${proofNote}`,
+        `Delete ${player.displayName}'s room data?${proofNote}`,
       )
     ) {
       return;
@@ -4292,7 +4825,7 @@ function TeamManagementPanel({
                 {groupPlayers.length > 0 ? (
                   <ul className="roster-list">
                     {groupPlayers.map((player) => {
-                      const proofCount = submissionsByPlayer.get(player.userId) ?? 0;
+                      const proofCount = submissionsByPlayer.get(player.id) ?? 0;
                       const isMoving = movingMembershipId === player.id;
                       const isKicking = kickingMembershipId === player.id;
                       const hasRosterAction =
@@ -4305,7 +4838,7 @@ function TeamManagementPanel({
                             <strong>{player.displayName}</strong>
                             <span>
                               {isKicking
-                                ? "Kicking..."
+                                ? "Deleting..."
                                 : isMoving
                                   ? "Moving..."
                                   : getProofCountLabel(proofCount)}
@@ -4325,14 +4858,14 @@ function TeamManagementPanel({
                               ))}
                             </select>
                             <button
-                              aria-label={`Kick ${player.displayName} from lobby`}
+                              aria-label={`Delete ${player.displayName}'s room data`}
                               className="roster-kick-button"
                               disabled={hasRosterAction}
                               type="button"
                               onClick={() => handleKick(player)}
                             >
                               <UserMinus aria-hidden="true" />
-                              <span>Kick</span>
+                              <span>Delete data</span>
                             </button>
                           </span>
                         </li>
@@ -4358,10 +4891,10 @@ function TeamManagementPanel({
             <div className="empty-state roster-empty-state"><Users aria-hidden="true" /><strong>No players yet</strong><p>Share the room link so players can join.</p></div>
           ) : players.map((player) => (
             <div className="roster-member" key={player.id}>
-              <span className="roster-member-main"><strong>{player.displayName}</strong><span>{getProofCountLabel(submissionsByPlayer.get(player.userId) ?? 0)}</span></span>
+              <span className="roster-member-main"><strong>{player.displayName}</strong><span>{getProofCountLabel(submissionsByPlayer.get(player.id) ?? 0)}</span></span>
               <span className="roster-member-actions">
                 <button className="secondary-action" type="button" onClick={() => onPromotePlayer(player.id)}>Make co-host</button>
-                <button className="roster-kick-button" type="button" onClick={() => handleKick(player)}><UserMinus aria-hidden="true" />Kick</button>
+                <button className="roster-kick-button" type="button" onClick={() => handleKick(player)}><UserMinus aria-hidden="true" />Delete data</button>
               </span>
             </div>
           ))}
@@ -5073,7 +5606,7 @@ function TaskBoard({
   return (
     <div
       className="blackout-board"
-      role="list"
+      role="group"
       aria-label="Game board"
       style={{ "--board-size": boardSize } as React.CSSProperties}
     >
@@ -5124,7 +5657,6 @@ function TaskTile({
         .join(" ")}
       disabled={!onTaskSelect}
       aria-label={`${task.title}. ${task.description}`}
-      role="listitem"
       title={task.title}
       type="button"
       onClick={() => onTaskSelect?.(task.id)}
@@ -5210,6 +5742,7 @@ function SelectedTaskCard({
   isUploading,
   isRetryingProof,
   onDismiss,
+  onDiscardPendingProof,
   onRetryPendingProof,
   onSubmitProof,
   onCompleteTask,
@@ -5222,6 +5755,7 @@ function SelectedTaskCard({
   isUploading: boolean;
   isRetryingProof: boolean;
   onDismiss: () => void;
+  onDiscardPendingProof: (proofId: string) => void;
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
   onCompleteTask: (taskId: string) => void;
@@ -5238,14 +5772,22 @@ function SelectedTaskCard({
   const status = getTaskStatus(task, groupId, submission ? [submission] : []);
   const inputId = `${groupId}-${task.id}`;
   const proofNote = submission && !submission.imagePath
-    ? "Completed without a photo. Add one if you want, or mark it incomplete."
+    ? proofMode === "optional"
+      ? "Completed without a photo. Add one if you want, or mark it incomplete."
+      : "Task completed. Mark it incomplete if you need to undo it."
     : getProofStateNote(status, task.free, isReplacingProof);
   const showPendingProofPanel =
     Boolean(pendingProof) && (!isUploading || Boolean(pendingProof?.lastError));
   const canSubmitProof =
-    !task.free && (status === "ready" || status === "retake" || isReplacingProof);
+    proofMode !== "none" &&
+    !task.free &&
+    (status === "ready" || status === "retake" || isReplacingProof);
   const canReplaceProof =
-    !task.free && Boolean(submission) && status !== "retake" && !isReplacingProof;
+    proofMode !== "none" &&
+    !task.free &&
+    Boolean(submission) &&
+    status !== "retake" &&
+    !isReplacingProof;
   const primaryPhotoLabel =
     status === "retake"
       ? "Retake photo"
@@ -5343,6 +5885,14 @@ function SelectedTaskCard({
           >
             <Upload aria-hidden="true" />
             {isRetryingProof ? "Retrying..." : "Retry upload"}
+          </button>
+          <button
+            className="secondary-action pending-proof-discard"
+            disabled={isUploading || isRetryingProof}
+            type="button"
+            onClick={() => onDiscardPendingProof(pendingProof.id)}
+          >
+            Discard saved photo
           </button>
         </div>
       )}
@@ -5869,31 +6419,26 @@ function ProofLightbox({
   submission: Submission;
   task: Task;
 }) {
-  useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
-    window.addEventListener("keydown", closeOnEscape);
-
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose]);
+  useModalAccessibility({
+    containerRef: dialogRef,
+    initialFocusRef: closeButtonRef,
+    onClose,
+  });
 
   return (
     <div
+      ref={dialogRef}
       aria-labelledby="proof-lightbox-title"
       aria-modal="true"
       className="proof-lightbox"
       role="dialog"
     >
-      <button
-        aria-label="Close proof photo"
+      <div
+        aria-hidden="true"
         className="proof-lightbox-backdrop"
-        type="button"
         onClick={onClose}
       />
       <div
@@ -5903,13 +6448,14 @@ function ProofLightbox({
         <div className="proof-lightbox-header">
           <div>
             <p className="label">{group.shortName}</p>
-            <h3 id="proof-lightbox-title">{task.title}</h3>
+            <h2 id="proof-lightbox-title">{task.title}</h2>
             <span className="proof-lightbox-meta">
               {formatSubmissionByline(submission)}
             </span>
             <span>{submission.imageName}</span>
           </div>
           <button
+            ref={closeButtonRef}
             aria-label="Close proof photo"
             className="proof-lightbox-close"
             type="button"
@@ -6096,10 +6642,7 @@ function getProofZipFilename({
     .map((value) => getFilenamePart(value ?? ""))
     .filter(Boolean)
     .join("-");
-  const extension =
-    getFileExtensionFromName(submission.imageName) ||
-    getFileExtensionFromMimeType(blobType) ||
-    ".jpg";
+  const extension = getFileExtensionFromMimeType(blobType) || ".jpg";
 
   return getUniqueFilename(`${baseName || "proof"}${extension}`, usedNames);
 }
@@ -6401,6 +6944,20 @@ function normalizeGameCodeInput(gameCode: string) {
   return gameCode.trim().toUpperCase();
 }
 
+function generateRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const values = crypto.getRandomValues(new Uint8Array(8));
+  const segment = (start: number) =>
+    Array.from(values.slice(start, start + 4), (value) => alphabet[value % alphabet.length])
+      .join("");
+  return `${segment(0)}-${segment(4)}`;
+}
+
+function generateHostPin() {
+  const values = crypto.getRandomValues(new Uint32Array(1));
+  return String(10_000_000 + (values[0] % 90_000_000));
+}
+
 function getPlayerJoinUrl(gameCode: string) {
   return `${window.location.origin}/?code=${encodeURIComponent(gameCode)}`;
 }
@@ -6574,16 +7131,6 @@ function isAllowedProofImageFile(file: File) {
 }
 
 async function prepareProofImageFile(file: File) {
-  const fileType = file.type.toLowerCase();
-  const needsBrowserSafeFormat =
-    fileType === "image/heic" ||
-    fileType === "image/heif" ||
-    /\.(heic|heif)$/i.test(file.name);
-
-  if (file.size <= MAX_PROOF_FILE_BYTES && !needsBrowserSafeFormat) {
-    return file;
-  }
-
   const compressedFile = await compressProofImageFile(file);
 
   if (compressedFile.size <= MAX_PROOF_FILE_BYTES) {
