@@ -1,8 +1,9 @@
 # Scavenger Blackout
 
-Scavenger Blackout is a temporary, mobile-first classroom and event game. A
-React client and Cloudflare Worker ship together; each live room uses a Durable
-Object and expires after seven days.
+Scavenger Blackout is a temporary, mobile-first scavenger-hunt game that anyone
+can host for friends, family, a class, a workplace, or another group. A React
+client and Cloudflare Worker ship together; each live room uses a Durable Object
+and expires after seven days.
 
 ## Local verification
 
@@ -33,8 +34,8 @@ domain are confirmed.
 - [Cloudflare setup](CLOUDFLARE_SETUP.md)
 
 The classroom starter and blank-room default do not collect photos. Photo
-activities are an opt-in host choice and require school or participant
-approval.
+activities are an opt-in host choice and require participant approval plus any
+additional approval that applies to the group.
 
 Production deployment also requires `VITE_SUPPORT_EMAIL` to contain a monitored
 public address. The deploy command stops before publishing if that contact is

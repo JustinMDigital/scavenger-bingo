@@ -11,6 +11,7 @@ const GAME: Game = {
   boardHidden: false,
   boardMode: "shared",
   boardSize: 3,
+  boardsNeedShuffle: false,
   code: "CLASS-1",
   freeSpace: true,
   id: "game-1",

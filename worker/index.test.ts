@@ -1,7 +1,8 @@
 import { exports as workerExports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GAME_KITS } from "../src/gameKits";
-import { createStarterRoom, upgradeRoom } from "./model";
+import { TASK_CATALOG } from "../src/taskCatalog";
+import { createStarterRoom, createStarterTasks, upgradeRoom } from "./model";
 
 const ORIGIN = "https://example.com";
 const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
@@ -35,6 +36,7 @@ describe("Cloudflare game room", () => {
     });
     const legacyRecord = legacyRoom as unknown as Record<string, unknown>;
     const legacyGame = legacyRoom.game as unknown as Record<string, unknown>;
+    legacyRoom.tasks = createStarterTasks();
     legacyRecord.version = 1;
     for (const key of [
       "setupComplete", "playMode", "winCondition", "boardSize", "boardMode",
@@ -78,6 +80,7 @@ describe("Cloudflare game room", () => {
     expect(hostState.boardAssignments).toHaveLength(0);
     expect(hostState.stops).toHaveLength(0);
     expect(hostState.game.timerMode).toBe("none");
+    expect(hostState.tasks.filter((task) => task.id !== "free")).toHaveLength(0);
 
     const configured = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
       action: "configureGame",
@@ -143,7 +146,11 @@ describe("Cloudflare game room", () => {
       payload: {
         gameId: configuredState.game.id,
         groupId: "team-1",
-        taskIds: [hostState.tasks[0].id, null, hostState.tasks[1].id],
+        taskIds: [
+          configuredState.tasks[0].id,
+          null,
+          configuredState.tasks[1].id,
+        ],
       },
     });
     expect(boardUpdate.status).toBe(200);
@@ -212,6 +219,17 @@ describe("Cloudflare game room", () => {
     expect(proof.status).toBe(200);
     const proofBody = await proof.json<{ data: { id: string; status: string } }>();
     expect(proofBody.data.status).toBe("pending");
+    expect((await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
+      action: "shuffleBoards",
+      payload: { gameId: configuredState.game.id },
+    })).status).toBe(409);
+    expect((await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
+      action: "removeTask",
+      payload: {
+        gameId: configuredState.game.id,
+        taskId: assignedTask!.taskId,
+      },
+    })).status).toBe(409);
 
     const forbiddenProof = await get(
       `/api/games/CF-TEST/proofs/${proofBody.data.id}`,
@@ -386,6 +404,215 @@ describe("Cloudflare game room", () => {
       displayName: "Casey",
     });
     expect(lateJoin.status).toBe(409);
+  });
+
+  it("imports editable catalog copies and atomically shuffles room boards", async () => {
+    const hostCookie = "scavenger_session=catalog-host-session-000000001";
+    expect((await postJson("/api/games/CATALOG-TEST/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Catalog Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "configureGame",
+      payload: { gameId: initial.game.id, template: "custom" },
+    })).status).toBe(200);
+    for (const name of ["Alpha", "Bravo"]) {
+      expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+        action: "addGroup",
+        payload: { gameId: initial.game.id, name },
+      })).status).toBe(200);
+    }
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "updateBoardSetup",
+      payload: {
+        gameId: initial.game.id,
+        boardSize: 3,
+        boardMode: "randomized",
+        freeSpace: true,
+      },
+    })).status).toBe(200);
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "addTask",
+      payload: {
+        gameId: initial.game.id,
+        slug: "custom-welcome",
+        title: "Custom Welcome",
+        description: "Wave hello to the group.",
+        icon: "Users",
+        isFree: false,
+        sortOrder: 2,
+      },
+    })).status).toBe(200);
+
+    for (const catalogTask of TASK_CATALOG.slice(0, 8)) {
+      expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+        action: "addCatalogTask",
+        payload: { gameId: initial.game.id, catalogTaskId: catalogTask.id },
+      })).status, catalogTask.id).toBe(200);
+    }
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "addCatalogTask",
+      payload: { gameId: initial.game.id, catalogTaskId: TASK_CATALOG[0].id },
+    })).status).toBe(409);
+
+    let state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.tasks.filter((task) => task.id !== "free")).toHaveLength(9);
+    expect(state.game.boardsNeedShuffle).toBe(true);
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "shuffleBoards",
+      payload: { gameId: initial.game.id },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.boardAssignments).toHaveLength(18);
+    expect(state.game.boardsNeedShuffle).toBe(false);
+    expect(
+      new Set(
+        state.boardAssignments
+          .filter((assignment) => assignment.taskId !== "free")
+          .map((assignment) => assignment.taskId),
+      ).size,
+    ).toBe(9);
+
+    const imported = state.tasks.find(
+      (task) => task.id === TASK_CATALOG[0].id,
+    )!;
+    const originalPositions = state.boardAssignments
+      .filter((assignment) => assignment.taskId === imported.id)
+      .map(({ groupId, slotOrder }) => ({ groupId, slotOrder }));
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "updateTask",
+      payload: {
+        gameId: initial.game.id,
+        taskId: imported.id,
+        patch: {
+          title: "Our Group Selfie",
+          description: "Fit everyone into the frame.",
+          icon: "Star",
+        },
+      },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.tasks.find((task) => task.id === imported.id)).toMatchObject({
+      catalogId: imported.id,
+      title: "Our Group Selfie",
+      description: "Fit everyone into the frame.",
+      icon: "Star",
+    });
+    expect(
+      state.boardAssignments
+        .filter((assignment) => assignment.taskId === imported.id)
+        .map(({ groupId, slotOrder }) => ({ groupId, slotOrder })),
+    ).toEqual(originalPositions);
+    expect(TASK_CATALOG[0].title).toBe("Group Selfie");
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "resetCatalogTask",
+      payload: { gameId: initial.game.id, taskId: imported.id },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.tasks.find((task) => task.id === imported.id)).toMatchObject({
+      title: TASK_CATALOG[0].title,
+      description: TASK_CATALOG[0].description,
+      icon: TASK_CATALOG[0].icon,
+    });
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "removeTask",
+      payload: { gameId: initial.game.id, taskId: "custom-welcome" },
+    })).status).toBe(200);
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "updateBoardSetup",
+      payload: {
+        gameId: initial.game.id,
+        boardSize: 3,
+        boardMode: "shared",
+        freeSpace: true,
+      },
+    })).status).toBe(200);
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "addCatalogTask",
+      payload: { gameId: initial.game.id, catalogTaskId: TASK_CATALOG[8].id },
+    })).status).toBe(409);
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "shuffleBoards",
+      payload: { gameId: initial.game.id },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    const firstBoard = state.boardAssignments.filter(
+      (assignment) => assignment.groupId === state.groups[0].id,
+    );
+    const secondBoard = state.boardAssignments.filter(
+      (assignment) => assignment.groupId === state.groups[1].id,
+    );
+    expect(secondBoard).toEqual(
+      firstBoard.map((assignment) => ({
+        ...assignment,
+        groupId: state.groups[1].id,
+      })),
+    );
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "removeTask",
+      payload: { gameId: initial.game.id, taskId: imported.id },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(
+      state.boardAssignments.some((assignment) => assignment.taskId === imported.id),
+    ).toBe(false);
+    expect(state.game.boardsNeedShuffle).toBe(true);
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "addCatalogTask",
+      payload: { gameId: initial.game.id, catalogTaskId: imported.id },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.tasks.find((task) => task.id === imported.id)).toMatchObject({
+      title: TASK_CATALOG[0].title,
+      description: TASK_CATALOG[0].description,
+      icon: TASK_CATALOG[0].icon,
+    });
+
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "updateBoardSetup",
+      payload: {
+        gameId: initial.game.id,
+        boardSize: 3,
+        boardMode: "randomized",
+        freeSpace: true,
+      },
+    })).status).toBe(200);
+    expect((await postJson("/api/games/CATALOG-TEST/actions", hostCookie, {
+      action: "addCatalogTask",
+      payload: {
+        gameId: initial.game.id,
+        catalogTaskId: TASK_CATALOG[8].id,
+      },
+    })).status).toBe(200);
+    state = await (
+      await get("/api/games/CATALOG-TEST", hostCookie)
+    ).json<GameState>();
+    expect(state.tasks.filter((task) => task.id !== "free")).toHaveLength(9);
   });
 
   it("limits rapid joins from one shared network without consuming host seats", async () => {
@@ -987,6 +1214,8 @@ type GameState = {
     id: string;
     name: string;
     boardHidden: boolean;
+    boardMode: string;
+    boardsNeedShuffle: boolean;
     setupComplete: boolean;
     timerMode: string;
     timerDurationMinutes: number;
@@ -995,7 +1224,13 @@ type GameState = {
     boardSize: number;
   };
   groups: Array<{ id: string; name: string }>;
-  tasks: Array<{ id: string; title: string }>;
+  tasks: Array<{
+    id: string;
+    catalogId?: string;
+    title: string;
+    description: string;
+    icon: string;
+  }>;
   boardAssignments: Array<{ groupId: string; taskId: string; slotOrder: number }>;
   membership: { id: string; role: string } | null;
   memberships: Array<{ id: string; isOwner?: boolean }>;

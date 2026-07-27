@@ -1,18 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   GROUP_COLOR_KEYS,
+  MAX_PLAYABLE_TASKS_PER_ROOM,
   createBoardForGroup,
   createBoards,
+  createFreeSpaceTask,
   createStarterRoom,
   createStarterTasks,
+  getTaskSelectionLimit,
   toPublicGroup,
   upgradeRoom,
 } from "./model";
 import { getGameKit } from "../src/gameKits";
+import { getCatalogTask } from "../src/taskCatalog";
 import type {
   BoardSize,
   HuntPhase,
   StoredBoardAssignment,
+  StoredGame,
   StoredGroup,
   StoredMembership,
   StoredRoom,
@@ -34,7 +39,6 @@ const MAX_PLAYERS_PER_ROOM = 95;
 const MAX_NEW_JOINS_PER_NETWORK_WINDOW = 50;
 const JOIN_WINDOW_MS = 60 * 1000;
 const JOIN_ATTEMPTS_KEY_PREFIX = "join-attempts:";
-const MAX_TASKS_PER_ROOM = 100;
 const MAX_STOPS_PER_ROOM = 20;
 const MAX_PROOF_BYTES = 500 * 1024;
 const MAX_ROOM_PROOF_BYTES = 25 * 1024 * 1024;
@@ -593,6 +597,9 @@ export class GameRoom extends DurableObject<Env> {
           room.tasks,
           room.game.boardSize,
           room.game.boardMode,
+          room.game.freeSpace,
+          room.boardAssignments,
+          crypto.randomUUID(),
         ),
       );
     }
@@ -918,6 +925,8 @@ export class GameRoom extends DurableObject<Env> {
             room.game.boardSize,
             room.game.boardMode,
             room.game.freeSpace,
+            room.boardAssignments,
+            crypto.randomUUID(),
           ),
         );
         data = toPublicGroup(group);
@@ -1014,11 +1023,38 @@ export class GameRoom extends DurableObject<Env> {
       }
       case "addTask": {
         requireGameId(room, payload.gameId);
-        if (room.tasks.length >= MAX_TASKS_PER_ROOM) {
-          throw new HttpError(409, `Rooms can have up to ${MAX_TASKS_PER_ROOM} tasks.`);
+        const taskLimit = getTaskSelectionLimit(room.game);
+        if (room.tasks.filter((item) => !item.free).length >= taskLimit) {
+          throw new HttpError(409, getTaskLimitMessage(room.game, taskLimit));
         }
         const task = createTask(payload, room.tasks);
         room.tasks.push(task);
+        room.game.boardsNeedShuffle = true;
+        data = task;
+        break;
+      }
+      case "addCatalogTask": {
+        requireGameId(room, payload.gameId);
+        const taskLimit = getTaskSelectionLimit(room.game);
+        if (room.tasks.filter((item) => !item.free).length >= taskLimit) {
+          throw new HttpError(409, getTaskLimitMessage(room.game, taskLimit));
+        }
+        const catalogTask = getCatalogTask(stringValue(payload.catalogTaskId));
+        if (!catalogTask) throw new HttpError(404, "Catalog task not found.");
+        if (room.tasks.some((item) => item.id === catalogTask.id)) {
+          throw new HttpError(409, "That task is already on the boards.");
+        }
+        const task: StoredTask = {
+          id: catalogTask.id,
+          catalogId: catalogTask.id,
+          title: catalogTask.title,
+          description: catalogTask.description,
+          icon: catalogTask.icon,
+          sortOrder:
+            room.tasks.reduce((highest, item) => Math.max(highest, item.sortOrder), 0) + 1,
+        };
+        room.tasks.push(task);
+        room.game.boardsNeedShuffle = true;
         data = task;
         break;
       }
@@ -1030,16 +1066,101 @@ export class GameRoom extends DurableObject<Env> {
         data = task;
         break;
       }
+      case "resetCatalogTask": {
+        requireGameId(room, payload.gameId);
+        const task = room.tasks.find((item) => item.id === stringValue(payload.taskId));
+        const catalogTask = task?.catalogId ? getCatalogTask(task.catalogId) : null;
+        if (!task || !catalogTask) {
+          throw new HttpError(404, "Original catalog task not found.");
+        }
+        task.title = catalogTask.title;
+        task.description = catalogTask.description;
+        task.icon = catalogTask.icon;
+        data = task;
+        break;
+      }
       case "removeTask": {
         requireGameId(room, payload.gameId);
         const taskId = stringValue(payload.taskId);
-        if (room.boardAssignments.some((item) => item.taskId === taskId)) {
-          throw new HttpError(409, "Remove the task from team boards first.");
-        }
         if (room.submissions.some((item) => item.taskId === taskId)) {
           throw new HttpError(409, "A proof still uses that task.");
         }
+        const task = room.tasks.find((item) => item.id === taskId);
+        if (task?.free) throw new HttpError(409, "The free square is controlled by board setup.");
+        room.boardAssignments = room.boardAssignments.filter((item) => item.taskId !== taskId);
         room.tasks = room.tasks.filter((item) => item.id !== taskId);
+        room.game.boardsNeedShuffle = true;
+        break;
+      }
+      case "updateBoardSetup": {
+        requireGameId(room, payload.gameId);
+        if (room.submissions.length > 0) {
+          throw new HttpError(409, "Boards lock after proofs arrive.");
+        }
+        const boardSize = Number(payload.boardSize);
+        if (![3, 4, 5].includes(boardSize)) {
+          throw new HttpError(400, "Choose a valid board size.");
+        }
+        const boardMode = enumValue(
+          payload.boardMode,
+          ["shared", "randomized"] as const,
+          "board style",
+        );
+        const freeSpace = boardSize % 2 === 1 && Boolean(payload.freeSpace);
+        if (
+          room.game.boardSize === boardSize &&
+          room.game.boardMode === boardMode &&
+          room.game.freeSpace === freeSpace
+        ) {
+          data = room.game;
+          break;
+        }
+        const selectedTaskCount = room.tasks.filter((item) => !item.free).length;
+        const sharedCapacity =
+          boardSize * boardSize - (freeSpace ? 1 : 0);
+        if (boardMode === "shared" && selectedTaskCount > sharedCapacity) {
+          throw new HttpError(
+            409,
+            `Remove ${selectedTaskCount - sharedCapacity} tasks before using shared boards.`,
+          );
+        }
+        room.game.boardSize = boardSize as BoardSize;
+        room.game.boardMode = boardMode;
+        room.game.freeSpace = freeSpace;
+        room.boardAssignments = [];
+        room.game.boardsNeedShuffle = true;
+        data = room.game;
+        break;
+      }
+      case "shuffleBoards": {
+        requireGameId(room, payload.gameId);
+        if (room.submissions.length > 0) {
+          throw new HttpError(409, "Boards lock after proofs arrive.");
+        }
+        const playableTaskCount = room.tasks.filter((item) => !item.free).length;
+        const needsFreeSquare = room.game.freeSpace && room.game.boardSize % 2 === 1;
+        const requiredTaskCount =
+          room.game.boardSize * room.game.boardSize - (needsFreeSquare ? 1 : 0);
+        if (playableTaskCount < requiredTaskCount) {
+          throw new HttpError(
+            409,
+            `Add ${requiredTaskCount - playableTaskCount} more tasks before shuffling.`,
+          );
+        }
+        const owners = getBoardOwners(room);
+        if (room.game.playMode === "teams" && owners.length === 0) {
+          throw new HttpError(409, "Add at least one team before shuffling.");
+        }
+        room.boardAssignments = createBoards(
+          owners,
+          room.tasks,
+          room.game.boardSize,
+          room.game.boardMode,
+          room.game.freeSpace,
+          crypto.randomUUID(),
+        );
+        room.game.boardsNeedShuffle = false;
+        data = room.boardAssignments;
         break;
       }
       case "setGroupBoardTasks": {
@@ -1924,9 +2045,11 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
       createGroup(room, `Team ${index + 1}`, index + 1),
     );
     room.stops = [];
-    room.tasks = gameKit.tasks
-      ? gameKit.tasks.map((task) => ({ ...task }))
-      : createStarterTasks();
+    room.tasks = markCatalogTasks(
+      gameKit.tasks
+        ? gameKit.tasks.map((task) => ({ ...task }))
+        : createStarterTasks(),
+    );
     return;
   }
 
@@ -1939,7 +2062,7 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
     room.game.proofMode = "required";
     room.game.approvalMode = "host";
     room.game.timerMode = "schedule";
-    room.tasks = createStarterTasks();
+    room.tasks = markCatalogTasks(createStarterTasks());
     room.groups = [
       createGroup(room, "Team 1", 1),
       createGroup(room, "Team 2", 2),
@@ -1992,7 +2115,7 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
     room.game.timerMode = "none";
     room.game.timerDurationMinutes = 60;
     room.game.timerSecondsTotal = 0;
-    room.tasks = createStarterTasks();
+    room.tasks = [createFreeSpaceTask()];
     room.groups = [];
     room.stops = [];
     return;
@@ -2002,7 +2125,34 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
 }
 
 function regenerateBoards(room: StoredRoom) {
-  const owners = room.game.playMode === "teams"
+  const owners = getBoardOwners(room);
+  const taskCount = room.tasks.filter((task) => !task.free).length;
+  const requiredTaskCount =
+    room.game.boardSize * room.game.boardSize -
+    (room.game.freeSpace && room.game.boardSize % 2 === 1 ? 1 : 0);
+  if (taskCount < requiredTaskCount) {
+    room.boardAssignments = [];
+    room.game.boardsNeedShuffle = true;
+    return;
+  }
+  room.boardAssignments = createBoards(
+    owners,
+    room.tasks,
+    room.game.boardSize,
+    room.game.boardMode,
+    room.game.freeSpace,
+  );
+  room.game.boardsNeedShuffle = false;
+}
+
+function getTaskLimitMessage(game: StoredGame, limit: number) {
+  return game.boardMode === "shared"
+    ? `Shared boards can use up to ${limit} tasks with this setup.`
+    : `Rooms can have up to ${MAX_PLAYABLE_TASKS_PER_ROOM} tasks.`;
+}
+
+function getBoardOwners(room: StoredRoom): StoredGroup[] {
+  return room.game.playMode === "teams"
     ? room.groups
     : room.memberships
         .filter((item) => item.role === "player")
@@ -2013,13 +2163,13 @@ function regenerateBoards(room: StoredRoom) {
           colorKey: GROUP_COLOR_KEYS[index % GROUP_COLOR_KEYS.length],
           sortOrder: index + 1,
         }));
-  room.boardAssignments = createBoards(
-    owners,
-    room.tasks,
-    room.game.boardSize,
-    room.game.boardMode,
-    room.game.freeSpace,
-  );
+}
+
+function markCatalogTasks(tasks: StoredTask[]) {
+  return tasks.map((task) => ({
+    ...task,
+    ...(getCatalogTask(task.id) ? { catalogId: task.id } : {}),
+  }));
 }
 
 function normalizePlayerOwnership(room: StoredRoom) {

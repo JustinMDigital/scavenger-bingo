@@ -65,4 +65,11 @@ describe("public page accessibility", () => {
     expect(screen.getByText(/short-lived Google access token/i)).toBeTruthy();
     expect(screen.getByText(/separate copy/i)).toBeTruthy();
   });
+
+  it("presents the game as something anyone can host", async () => {
+    render(<App />);
+
+    expect(await screen.findByText(/anyone can host/i)).toBeTruthy();
+    expect(screen.getByText(/friends, family, a class, or any other group/i)).toBeTruthy();
+  });
 });

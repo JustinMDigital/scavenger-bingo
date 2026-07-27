@@ -10,10 +10,10 @@ channel that supplied the Scavenger Blackout link. Include:
 - Whether the reporter was a host or player.
 - A description of the unexpected result.
 
-Do not include a host PIN, session cookie, full student name, or student photo.
+Do not include a host PIN, session cookie, full player name, or private photo.
 
 A monitored public security contact and response owner must be confirmed before
-broad self-service school release. Until then, the app is suitable only for
+broad self-service release. Until then, the app is suitable only for
 coordinated pilots with an established contact channel.
 
 ## Supported release

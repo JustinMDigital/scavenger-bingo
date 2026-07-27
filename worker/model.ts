@@ -7,6 +7,7 @@ export type ProofMode = "required" | "optional" | "none";
 export type ApprovalMode = "host" | "automatic";
 export type TimerMode = "none" | "duration" | "schedule";
 export type BoardSize = 3 | 4 | 5;
+export const MAX_PLAYABLE_TASKS_PER_ROOM = 100;
 
 export type StoredGame = {
   id: string;
@@ -24,6 +25,7 @@ export type StoredGame = {
   boardSize: BoardSize;
   boardMode: BoardMode;
   freeSpace: boolean;
+  boardsNeedShuffle: boolean;
   proofMode: ProofMode;
   approvalMode: ApprovalMode;
   timerMode: TimerMode;
@@ -42,6 +44,7 @@ export type StoredGroup = {
 
 export type StoredTask = {
   id: string;
+  catalogId?: string;
   title: string;
   description: string;
   icon: string;
@@ -174,7 +177,7 @@ export function createStarterRoom({
 }): StoredRoom {
   const gameId = crypto.randomUUID();
   const groups: StoredGroup[] = [];
-  const tasks = createStarterTasks();
+  const tasks = [createFreeSpaceTask()];
 
   return {
     version: 2,
@@ -198,6 +201,7 @@ export function createStarterRoom({
       boardSize: 5,
       boardMode: "randomized",
       freeSpace: true,
+      boardsNeedShuffle: true,
       proofMode: "none",
       approvalMode: "host",
       timerMode: "none",
@@ -218,16 +222,57 @@ export function createStarterTasks(): StoredTask[] {
   return STARTER_TASKS.map((item) => ({ ...item }));
 }
 
+export function createFreeSpaceTask(): StoredTask {
+  return { ...STARTER_TASKS.find((item) => item.free)! };
+}
+
+export function getTaskSelectionLimit(
+  game: Pick<StoredGame, "boardMode" | "boardSize" | "freeSpace">,
+) {
+  if (game.boardMode === "randomized") return MAX_PLAYABLE_TASKS_PER_ROOM;
+  return (
+    game.boardSize * game.boardSize -
+    (game.freeSpace && game.boardSize % 2 === 1 ? 1 : 0)
+  );
+}
+
 export function createBoards(
   groups: StoredGroup[],
   tasks: StoredTask[],
   boardSize: BoardSize = 5,
   boardMode: BoardMode = "randomized",
   includeFreeSpace = true,
+  shuffleSeed = "initial",
 ): StoredBoardAssignment[] {
-  return groups.flatMap((item) =>
-    createBoardForGroup(item.id, tasks, boardSize, boardMode, includeFreeSpace),
+  if (groups.length === 0) return [];
+
+  const layout = getBoardLayout(tasks, boardSize, includeFreeSpace);
+  const shuffledPool = stableShuffle(layout.nonFreeTasks, `${shuffleSeed}:pool`);
+  const sharedTasks = stableShuffle(
+    shuffledPool.slice(0, layout.playableSlots.length),
+    `${shuffleSeed}:shared:positions`,
   );
+
+  return groups.flatMap((groupValue, groupIndex) => {
+    const selectedTasks = boardMode === "shared"
+      ? sharedTasks
+      : Array.from(
+          { length: Math.min(layout.playableSlots.length, shuffledPool.length) },
+          (_, index) =>
+            shuffledPool[(groupIndex * layout.playableSlots.length + index) % shuffledPool.length],
+        );
+    const orderedTasks = boardMode === "shared"
+      ? selectedTasks
+      : stableShuffle(selectedTasks, `${shuffleSeed}:${groupValue.id}:positions`);
+
+    return assignmentsForTasks(
+      groupValue.id,
+      orderedTasks,
+      layout.playableSlots,
+      layout.centerTask,
+      layout.centerSlot,
+    );
+  });
 }
 
 export function createBoardForGroup(
@@ -236,38 +281,41 @@ export function createBoardForGroup(
   boardSize: BoardSize = 5,
   boardMode: BoardMode = "randomized",
   includeFreeSpace = true,
+  existingAssignments: StoredBoardAssignment[] = [],
+  shuffleSeed = groupId,
 ): StoredBoardAssignment[] {
-  const sorted = [...tasks].sort((a, b) => a.sortOrder - b.sortOrder);
-  const centerTask = includeFreeSpace && boardSize % 2 === 1
-    ? sorted.find((item) => item.free)
-    : undefined;
-  const nonFree = sorted.filter((item) => !item.free);
-  const slotCount = boardSize * boardSize;
-  const sharedCount = Math.min(4, Math.max(1, boardSize - 1));
-  const shared = nonFree.slice(0, sharedCount);
-  const boardSeed = boardMode === "shared" ? "shared" : groupId;
-  const varied = nonFree
-    .filter((item) => !shared.some((sharedTask) => sharedTask.id === item.id))
-    .sort((a, b) => stableHash(`${boardSeed}:${a.id}`) - stableHash(`${boardSeed}:${b.id}`));
-  const centerSlot = Math.floor(slotCount / 2) + 1;
-  const slots = Array.from({ length: slotCount }, (_, index) => index + 1).filter(
-    (slot) => slot > sharedCount && (slot !== centerSlot || !centerTask),
-  );
-  const assignments = shared.map((item, index) => ({
-    groupId,
-    taskId: item.id,
-    slotOrder: index + 1,
-  }));
+  const layout = getBoardLayout(tasks, boardSize, includeFreeSpace);
 
-  varied.slice(0, slots.length).forEach((item, index) => {
-    assignments.push({ groupId, taskId: item.id, slotOrder: slots[index] });
-  });
-
-  if (centerTask) {
-    assignments.push({ groupId, taskId: centerTask.id, slotOrder: centerSlot });
+  if (boardMode === "shared" && existingAssignments.length > 0) {
+    const sourceGroupId = existingAssignments[0].groupId;
+    return existingAssignments
+      .filter((assignment) => assignment.groupId === sourceGroupId)
+      .map((assignment) => ({ ...assignment, groupId }));
   }
 
-  return assignments.sort((a, b) => a.slotOrder - b.slotOrder);
+  const usageCounts = new Map<string, number>();
+  existingAssignments.forEach((assignment) => {
+    const task = tasks.find((item) => item.id === assignment.taskId);
+    if (task && !task.free) {
+      usageCounts.set(task.id, (usageCounts.get(task.id) ?? 0) + 1);
+    }
+  });
+  const selectedTasks = [...layout.nonFreeTasks]
+    .sort(
+      (first, second) =>
+        (usageCounts.get(first.id) ?? 0) - (usageCounts.get(second.id) ?? 0) ||
+        stableHash(`${shuffleSeed}:${first.id}`) - stableHash(`${shuffleSeed}:${second.id}`),
+    )
+    .slice(0, layout.playableSlots.length);
+  const orderedTasks = stableShuffle(selectedTasks, `${shuffleSeed}:${groupId}:positions`);
+
+  return assignmentsForTasks(
+    groupId,
+    orderedTasks,
+    layout.playableSlots,
+    layout.centerTask,
+    layout.centerSlot,
+  );
 }
 
 export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): StoredRoom {
@@ -284,6 +332,8 @@ export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): S
     boardSize: legacyGame.boardSize ?? 5,
     boardMode: legacyGame.boardMode ?? "randomized",
     freeSpace: legacyGame.freeSpace ?? true,
+    boardsNeedShuffle:
+      legacyGame.boardsNeedShuffle ?? room.boardAssignments.length === 0,
     proofMode: legacyGame.proofMode ?? "required",
     approvalMode: legacyGame.approvalMode ?? "host",
     timerMode: legacyGame.timerMode ?? (room.stops.length > 0 ? "schedule" : "none"),
@@ -344,4 +394,54 @@ function stableHash(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function getBoardLayout(
+  tasks: StoredTask[],
+  boardSize: BoardSize,
+  includeFreeSpace: boolean,
+) {
+  const sorted = [...tasks].sort((a, b) => a.sortOrder - b.sortOrder);
+  const slotCount = boardSize * boardSize;
+  const centerSlot = Math.floor(slotCount / 2) + 1;
+  const centerTask = includeFreeSpace && boardSize % 2 === 1
+    ? sorted.find((item) => item.free)
+    : undefined;
+  const playableSlots = Array.from({ length: slotCount }, (_, index) => index + 1).filter(
+    (slot) => slot !== centerSlot || !centerTask,
+  );
+
+  return {
+    centerSlot,
+    centerTask,
+    nonFreeTasks: sorted.filter((item) => !item.free),
+    playableSlots,
+  };
+}
+
+function assignmentsForTasks(
+  groupId: string,
+  tasks: StoredTask[],
+  playableSlots: number[],
+  centerTask: StoredTask | undefined,
+  centerSlot: number,
+) {
+  const assignments = tasks.map((taskValue, index) => ({
+    groupId,
+    taskId: taskValue.id,
+    slotOrder: playableSlots[index],
+  }));
+
+  if (centerTask) {
+    assignments.push({ groupId, taskId: centerTask.id, slotOrder: centerSlot });
+  }
+
+  return assignments.sort((first, second) => first.slotOrder - second.slotOrder);
+}
+
+function stableShuffle<T extends { id: string }>(values: T[], seed: string) {
+  return [...values].sort(
+    (first, second) =>
+      stableHash(`${seed}:${first.id}`) - stableHash(`${seed}:${second.id}`),
+  );
 }

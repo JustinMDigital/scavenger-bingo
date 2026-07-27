@@ -12,6 +12,7 @@ export default defineConfig({
     environment: "jsdom",
     include: [
       "src/accessibility.test.tsx",
+      "src/boardEditor.test.tsx",
       "src/pendingProofStore.test.ts",
     ],
   },

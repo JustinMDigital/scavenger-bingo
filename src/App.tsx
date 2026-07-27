@@ -92,6 +92,7 @@ import { GAME_KITS, getGameKit } from "./gameKits";
 import type { GameKit, GameKitId } from "./gameKits";
 import {
   abandonGameLobby,
+  addCatalogTask as createCatalogTask,
   addGroup as createGroup,
   addStop as createStop,
   addTask as createTask,
@@ -109,17 +110,27 @@ import {
   removeGroup as deleteGroup,
   removeStop as deleteStop,
   removeTask as deleteTask,
+  resetCatalogTask,
   resetGameProofs,
   saveTaskProof,
   setGroupBoardTasks,
+  shuffleBoards,
   subscribeToGameChanges,
   transferHostOwnership,
   updateGroupDetails,
   updateGameTimer,
+  updateBoardSetup,
   updateStopDetails,
   updateTaskDetails,
   updateSubmissionStatus,
 } from "./gameService";
+import {
+  TASK_CATALOG,
+  TASK_CATEGORIES,
+  getCatalogTask,
+  searchTaskCatalog,
+} from "./taskCatalog";
+import type { CatalogCategory, CatalogTask } from "./taskCatalog";
 import {
   createPendingProofUpload,
   deletePendingProofUpload,
@@ -1366,10 +1377,18 @@ export default function App() {
     }
   }
 
-  async function handleAddTask() {
+  async function handleAddTask({
+    title: requestedTitle,
+    description = "Add the scavenger task details.",
+    icon = "Camera",
+  }: {
+    title?: string;
+    description?: string;
+    icon?: string;
+  } = {}) {
     if (!gameState) return;
 
-    const title = `Task ${tasks.length + 1}`;
+    const title = requestedTitle?.trim() || `Task ${tasks.filter((task) => !task.free).length + 1}`;
     const sortOrder =
       tasks.reduce((highest, task) => Math.max(highest, task.sortOrder), 0) + 1;
 
@@ -1378,16 +1397,64 @@ export default function App() {
         gameId: gameState.game.id,
         slug: createTaskSlug(title, tasks.map((task) => task.id)),
         title,
-        description: "Add the scavenger task details.",
-        icon: "Camera",
+        description: description.trim(),
+        icon,
         isFree: false,
         sortOrder,
       });
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast("Task added");
+      setToast("Custom task added");
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Add task failed");
+    }
+  }
+
+  async function handleAddCatalogTask(catalogTaskId: string) {
+    if (!gameState) return;
+
+    try {
+      await createCatalogTask(gameState.game.id, catalogTaskId);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Task added to boards");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Add task failed");
+    }
+  }
+
+  async function handleResetCatalogTask(taskId: string) {
+    if (!gameState) return;
+
+    try {
+      await resetCatalogTask(gameState.game.id, taskId);
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Original task restored");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Reset task failed");
+    }
+  }
+
+  async function handleUpdateBoardSetup({
+    boardSize,
+    boardMode,
+    freeSpace,
+  }: Pick<Game, "boardSize" | "boardMode" | "freeSpace">) {
+    if (!gameState) return;
+
+    try {
+      await updateBoardSetup({
+        gameId: gameState.game.id,
+        boardSize,
+        boardMode,
+        freeSpace,
+      });
+      await refreshGameState(gameState.game.code, { silent: true });
+      setToast("Board setup updated");
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError));
+      setToast("Board setup failed");
     }
   }
 
@@ -1422,15 +1489,12 @@ export default function App() {
   async function handleRemoveTask(taskId: string) {
     if (!gameState) return;
 
-    const isAssigned = boardAssignments.some(
-      (assignment) => assignment.taskId === taskId,
-    );
     const hasProof = gameState.submissions.some(
       (submission) => submission.taskId === taskId,
     );
 
-    if (isAssigned || hasProof) {
-      setToast("Remove it from boards first");
+    if (hasProof) {
+      setToast("A proof still uses that task");
       return;
     }
 
@@ -1484,24 +1548,9 @@ export default function App() {
     }
 
     try {
-      const generatedBoards = generateGroupBoards(
-        groups,
-        tasks,
-        gameState.game.boardSize,
-        gameState.game.freeSpace,
-        gameState.game.boardMode,
-      );
-
-      for (const group of groups) {
-        await setGroupBoardTasks({
-          gameId: gameState.game.id,
-          groupId: group.id,
-          taskIds: generatedBoards[group.id] ?? [],
-        });
-      }
-
+      await shuffleBoards(gameState.game.id);
       await refreshGameState(gameState.game.code, { silent: true });
-      setToast("Boards generated");
+      setToast("Boards shuffled");
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Board generation failed");
@@ -1807,6 +1856,7 @@ export default function App() {
               activeStopIndex={activeStopIndex}
               addFiveMinutes={handleAddFiveMinutes}
               addGroup={handleAddGroup}
+              addCatalogTask={handleAddCatalogTask}
               addStop={handleAddStop}
               addTask={handleAddTask}
               abandonGame={handleAbandonGame}
@@ -1832,6 +1882,7 @@ export default function App() {
               transferHost={(id) => handleHostMembershipAction("transfer", id)}
               removeGroup={handleRemoveGroup}
               removeTask={handleRemoveTask}
+              resetCatalogTask={handleResetCatalogTask}
               removeStop={handleRemoveStop}
               saveGroupBoard={handleSaveGroupBoard}
               selectedHostGroupId={selectedHostGroupId}
@@ -1850,6 +1901,7 @@ export default function App() {
               routeDisplay={routeDisplay}
               updateStop={handleUpdateStop}
               updateGroup={handleUpdateGroup}
+              updateBoardSetup={handleUpdateBoardSetup}
               updateRoom={(patch) => void syncGameTimer(patch, { successToast: "Room updated" })}
               updateTask={handleUpdateTask}
             />
@@ -2304,7 +2356,10 @@ function GameCodeGate({
       <section className="landing-host" aria-labelledby="host-callout-title">
         <div>
           <h2 id="host-callout-title">Want to run the hunt?</h2>
-          <p>Choose a ready-made game or build your own, then share the room code.</p>
+          <p>
+            Anyone can host. Choose a ready-made game or build your own, then share
+            the room code with friends, family, a class, or any other group.
+          </p>
           <p>
             After the host finishes the game, players can optionally create a
             presentation in their own Google Drive. Google access is requested only
@@ -2366,11 +2421,12 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           <p className="label">Plain-language notice</p>
           <h1 id="privacy-title">Privacy</h1>
           <p>
-            Scavenger Blackout is a temporary classroom and event game. It has no
-            advertising, behavioral analytics, permanent student accounts, or sale of
-            personal information.
+            Scavenger Blackout is a temporary scavenger-hunt game for friends,
+            families, classrooms, workplaces, and other groups. It has no advertising,
+            behavioral analytics, permanent player accounts, or sale of personal
+            information.
           </p>
-          <p><strong>Last updated:</strong> July 26, 2026</p>
+          <p><strong>Last updated:</strong> July 27, 2026</p>
           <h2>What the game uses</h2>
           <ul>
             <li>A first name or nickname, room membership, team, task progress, and submission status.</li>
@@ -2414,7 +2470,7 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           <p>
             Room data and proof images automatically expire within seven days. A failed
             photo upload may be saved only in that browser for retry, is separated by
-            student membership, and is removed after seven days or when the student
+            player membership, and is removed after seven days or when the player
             discards it or leaves.
           </p>
           <p>
@@ -2425,10 +2481,9 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           </p>
           <h2>Choices and deletion</h2>
           <p>
-            Students can leave and clear the device. Hosts can delete one student’s room
-            data, reset every proof, or abandon the room immediately. Students and
-            families should ask the teacher or school that supplied the room code for a
-            deletion or access request.
+            Players can leave and clear the device. Hosts can delete one player’s room
+            data, reset every proof, or abandon the room immediately. Ask the host who
+            supplied the room code about a deletion or access request.
           </p>
           {SUPPORT_EMAIL && (
             <p>
@@ -2447,12 +2502,12 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
         <article aria-labelledby="terms-title">
           <p className="label">Rules for using the service</p>
           <h1 id="terms-title">Terms</h1>
-          <p><strong>Last updated:</strong> July 26, 2026</p>
+          <p><strong>Last updated:</strong> July 27, 2026</p>
           <p>
             These terms apply when you use this temporary scavenger-hunt service. If a
-            school, teacher, employer, or event organizer supplied the room, their rules
-            and policies also apply. Children should use the service only with the
-            direction of the responsible adult or organization.
+            friend, family member, school, employer, or event organizer supplied the
+            room, their rules and policies also apply. Children should use the service
+            only with the direction of the responsible adult or organization.
           </p>
           <h2>Using the game responsibly</h2>
           <p>
@@ -2477,9 +2532,9 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           <p>
             Rooms, progress, and proof photos are temporary and normally expire within
             seven days. The service is not an archive. A Google Slides presentation is a
-            separate copy in the player’s Google Drive and is governed by Google and any
-            applicable school or organization policy. The player is responsible for
-            sharing, retaining, or deleting that exported copy.
+            separate copy in the player’s Google Drive and is governed by Google and
+            any policies that apply to the player’s account. The player is responsible
+            for sharing, retaining, or deleting that exported copy.
           </p>
           <h2>Availability</h2>
           <p>
@@ -2505,24 +2560,24 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           </p>
           <p>
             These terms are general product information and should be reviewed for the
-            requirements of the school, organization, and jurisdiction using the game.
+            requirements of the people, organizations, and jurisdiction using the game.
           </p>
         </article>
       ) : (
         <article aria-labelledby="support-title">
           <p className="label">Help and incidents</p>
           <h1 id="support-title">Support</h1>
-          <h2>During a class</h2>
+          <h2>During a game</h2>
           <ol>
             <li>If a safety or privacy issue occurs, stop the activity and close the lobby.</li>
             <li>Keep the room code and host PIN private except for the intended group.</li>
-            <li>If a student cannot join, confirm that the lobby is open and reload once.</li>
+            <li>If a player cannot join, confirm that the lobby is open and reload once.</li>
             <li>If a photo fails, retry it or discard the saved photo; do not repeatedly select new copies.</li>
-            <li>If the room code was shared outside the class, close the lobby and create a new room.</li>
+            <li>If the room code was shared outside the group, close the lobby and create a new room.</li>
           </ol>
           <h2>Privacy requests</h2>
           <p>
-            The host can use <strong>Delete data</strong> beside one student, and students
+            The host can use <strong>Delete data</strong> beside one player, and players
             can use <strong>Leave and clear this device</strong>. Abandoning a room removes
             all room data immediately.
           </p>
@@ -2538,10 +2593,10 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
                 For a pilot, contact the person who supplied the Scavenger Blackout link
                 and include the room code, approximate time, device/browser, and what
                 happened. A monitored public support address is required before broad
-                self-service school release.
+                self-service release.
               </>
             )}{" "}
-            Do not send a host PIN or student photo.
+            Do not send a host PIN or private photo.
           </p>
           <h2>Accessibility</h2>
           <p>
@@ -3674,6 +3729,7 @@ function HostView({
   activeStopIndex,
   addFiveMinutes,
   addGroup,
+  addCatalogTask,
   addStop,
   addTask,
   abandonGame,
@@ -3699,6 +3755,7 @@ function HostView({
   transferHost,
   removeGroup,
   removeTask,
+  resetCatalogTask,
   removeStop,
   resetGameProofs,
   saveGroupBoard,
@@ -3717,14 +3774,16 @@ function HostView({
   routeDisplay,
   updateStop,
   updateGroup,
+  updateBoardSetup,
   updateRoom,
   updateTask,
 }: {
   activeStopIndex: number;
   addFiveMinutes: () => void;
   addGroup: (groupName: string) => Promise<boolean>;
+  addCatalogTask: (catalogTaskId: string) => void;
   addStop: () => void;
-  addTask: () => void;
+  addTask: (task: { title?: string; description?: string; icon?: string }) => void;
   abandonGame: () => void;
   boardAssignments: BoardAssignment[];
   configure: (
@@ -3752,6 +3811,7 @@ function HostView({
   transferHost: (membershipId: string) => void;
   removeGroup: (groupId: string) => void;
   removeTask: (taskId: string) => void;
+  resetCatalogTask: (taskId: string) => void;
   removeStop: (stopId: string) => void;
   resetGameProofs: () => void;
   saveGroupBoard: (groupId: string, taskIds: string[]) => void;
@@ -3776,6 +3836,9 @@ function HostView({
     groupId: string,
     patch: Parameters<typeof updateGroupDetails>[2],
   ) => void;
+  updateBoardSetup: (
+    setup: Pick<Game, "boardSize" | "boardMode" | "freeSpace">,
+  ) => void;
   updateRoom: (patch: LocalGamePatch) => void;
   updateTask: (
     taskId: string,
@@ -3796,15 +3859,22 @@ function HostView({
     "game",
   );
   const boardSlotCount = getBoardSlotCount(game.boardSize);
+  const playableTaskCount = tasks.filter((task) => !task.free).length;
+  const requiredTaskCount = getRequiredPlayableTaskCount(
+    game.boardSize,
+    game.freeSpace,
+  );
   const boardOwners = game.playMode === "teams" ? groups : scoreGroups;
   const boardsReady =
+    !game.boardsNeedShuffle &&
     (game.playMode === "individual" || boardOwners.length > 0) &&
-    tasks.length >= boardSlotCount &&
-    boardOwners.every(
-      (group) =>
-        getGroupBoardTasks(group.id, tasks, boardAssignments).length ===
-        boardSlotCount,
-    );
+    playableTaskCount >= requiredTaskCount &&
+    (boardOwners.length === 0 ||
+      boardOwners.every(
+        (group) =>
+          getGroupBoardTasks(group.id, tasks, boardAssignments).length ===
+          boardSlotCount,
+      ));
   const setupReady =
     boardsReady &&
     (game.playMode === "individual" || groups.length > 0) &&
@@ -3834,7 +3904,9 @@ function HostView({
     {
       id: "boards" as const,
       label: "Boards",
-      detail: boardsReady ? "Boards are ready" : `${tasks.length} tasks in the pool`,
+      detail: boardsReady
+        ? "Boards are ready"
+        : `${playableTaskCount} tasks selected`,
       complete: boardsReady,
     },
     {
@@ -3999,21 +4071,28 @@ function HostView({
                 <div>
                   <p className="label">Step 3</p>
                   <h2 id="setup-boards-heading">Make the boards</h2>
-                  <p>Adjust the task pool, then generate or fine-tune each team board.</p>
+                  <p>Choose tasks from the catalog, make any edits, then shuffle the boards.</p>
                 </div>
                 <span>{boardsReady ? "Ready" : "In progress"}</span>
               </div>
               <BoardEditor
                 boardAssignments={boardAssignments}
                 boardSize={game.boardSize}
+                boardMode={game.boardMode}
                 boardsLocked={boardsLocked}
+                boardsNeedShuffle={game.boardsNeedShuffle}
+                freeSpace={game.freeSpace}
                 groups={boardOwners}
+                onAddCatalogTask={addCatalogTask}
                 onAddTask={addTask}
                 onGenerateBoards={generateBoards}
                 onRemoveTask={removeTask}
+                onResetCatalogTask={resetCatalogTask}
                 onSaveGroupBoard={saveGroupBoard}
+                onUpdateBoardSetup={updateBoardSetup}
                 onUpdateTask={updateTask}
                 openByDefault
+                playMode={game.playMode}
                 showHeading={false}
                 submissions={submissions}
                 tasks={tasks}
@@ -4519,9 +4598,6 @@ function GameSettingsPanel({
     name: game.name,
     playMode: game.playMode,
     winCondition: game.winCondition,
-    boardSize: game.boardSize,
-    boardMode: game.boardMode,
-    freeSpace: game.freeSpace,
     proofMode: game.proofMode,
     approvalMode: game.approvalMode,
     timerMode: game.timerMode,
@@ -4536,9 +4612,6 @@ function GameSettingsPanel({
       name: game.name,
       playMode: game.playMode,
       winCondition: game.winCondition,
-      boardSize: game.boardSize,
-      boardMode: game.boardMode,
-      freeSpace: game.freeSpace,
       proofMode: game.proofMode,
       approvalMode: game.approvalMode,
       timerMode: game.timerMode,
@@ -4590,14 +4663,11 @@ function GameSettingsPanel({
         <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
         <label className="field"><span>Players</span><select value={draft.playMode} onChange={(event) => setDraft({ ...draft, playMode: event.target.value as Game["playMode"] })}><option value="teams">Teams</option><option value="individual">Free-for-all</option></select></label>
         <label className="field"><span>Winning</span><select value={draft.winCondition} onChange={(event) => setDraft({ ...draft, winCondition: event.target.value as Game["winCondition"] })}><option value="blackout">Blackout — every square</option><option value="bingo">Bingo — one full line</option></select></label>
-        <label className="field"><span>Board size</span><select value={draft.boardSize} onChange={(event) => setDraft({ ...draft, boardSize: Number(event.target.value) as BoardSize })}><option value={3}>3 × 3</option><option value={4}>4 × 4</option><option value={5}>5 × 5</option></select></label>
-        <label className="field"><span>Boards</span><select value={draft.boardMode} onChange={(event) => setDraft({ ...draft, boardMode: event.target.value as Game["boardMode"] })}><option value="randomized">Different for each</option><option value="shared">Same for everyone</option></select></label>
-        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => { const proofMode = event.target.value as Game["proofMode"]; setDraft({ ...draft, proofMode }); if (proofMode === "none") setPhotoApprovalAcknowledged(false); }}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photo uploads</option></select><small>{draft.proofMode === "none" ? "Recommended for classrooms. Students complete tasks without uploading images." : "Uploaded photos stay in the temporary room for up to seven days."}</small></label>
+        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => { const proofMode = event.target.value as Game["proofMode"]; setDraft({ ...draft, proofMode }); if (proofMode === "none") setPhotoApprovalAcknowledged(false); }}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photo uploads</option></select><small>{draft.proofMode === "none" ? "A simple choice for any group that does not need pictures. Players complete tasks without uploading images." : "Uploaded photos stay in the temporary room for up to seven days."}</small></label>
         <label className="field"><span>Approval</span><select value={draft.approvalMode} disabled={draft.proofMode === "none"} onChange={(event) => setDraft({ ...draft, approvalMode: event.target.value as Game["approvalMode"] })}><option value="host">Host approves</option><option value="automatic">Automatic</option></select></label>
         <label className="field"><span>Timer</span><select value={draft.timerMode} onChange={(event) => setDraft({ ...draft, timerMode: event.target.value as TimerMode })}><option value="none">No timer</option><option value="duration">Countdown</option><option value="schedule">Scheduled stops</option></select></label>
         {draft.timerMode === "duration" && <label className="field"><span>Minutes</span><input min={1} max={1440} type="number" value={draft.timerDurationMinutes} onChange={(event) => setDraft({ ...draft, timerDurationMinutes: Number(event.target.value) })} /></label>}
         {draft.timerMode === "schedule" && <label className="field"><span>First start time</span><input value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
-        <label className="task-free-toggle"><input checked={draft.freeSpace} type="checkbox" onChange={(event) => setDraft({ ...draft, freeSpace: event.target.checked })} />Include a free center square when possible</label>
         {draft.proofMode !== "none" && (
           <label className="task-free-toggle photo-approval-toggle">
             <input
@@ -4605,7 +4675,9 @@ function GameSettingsPanel({
               type="checkbox"
               onChange={(event) => setPhotoApprovalAcknowledged(event.target.checked)}
             />
-            I have school or participant approval to collect photos, and I will avoid faces, private documents, and exact locations unless specifically approved.
+            I have participant approval and any additional approval my group requires
+            to collect photos. I will avoid faces, private documents, and exact locations
+            unless specifically approved.
           </label>
         )}
       </div>
@@ -4970,48 +5042,92 @@ function TeamSettingsRow({
   );
 }
 
-function BoardEditor({
+export function BoardEditor({
   boardAssignments,
+  boardMode,
   boardSize,
   boardsLocked,
+  boardsNeedShuffle,
+  freeSpace,
   groups,
+  onAddCatalogTask,
   onAddTask,
   onGenerateBoards,
   onRemoveTask,
+  onResetCatalogTask,
   onSaveGroupBoard,
+  onUpdateBoardSetup,
   onUpdateTask,
   openByDefault = false,
+  playMode,
   showHeading = true,
   submissions,
   tasks,
 }: {
   boardAssignments: BoardAssignment[];
+  boardMode: Game["boardMode"];
   boardSize: BoardSize;
   boardsLocked: boolean;
+  boardsNeedShuffle: boolean;
+  freeSpace: boolean;
   groups: Group[];
-  onAddTask: () => void;
+  onAddCatalogTask: (catalogTaskId: string) => void;
+  onAddTask: (task: { title?: string; description?: string; icon?: string }) => void;
   onGenerateBoards: () => void;
   onRemoveTask: (taskId: string) => void;
+  onResetCatalogTask: (taskId: string) => void;
   onSaveGroupBoard: (groupId: string, taskIds: string[]) => void;
+  onUpdateBoardSetup: (
+    setup: Pick<Game, "boardSize" | "boardMode" | "freeSpace">,
+  ) => void;
   onUpdateTask: (
     taskId: string,
-    patch: Partial<Pick<Task, "title" | "description" | "icon" | "free">>,
+    patch: Partial<Pick<Task, "title" | "description" | "icon">>,
   ) => void;
   openByDefault?: boolean;
+  playMode: Game["playMode"];
   showHeading?: boolean;
   submissions: Submission[];
   tasks: Task[];
 }) {
   const [isCollapsed, setIsCollapsed] = useState(!openByDefault);
   const [taskSearch, setTaskSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<CatalogCategory | "All">("All");
+  const [visibleCatalogCount, setVisibleCatalogCount] = useState(30);
+  const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState(groups[0]?.id ?? "");
-  const sortedTasks = useMemo(() => getSortedTasks(tasks), [tasks]);
-  const visibleTasks = useMemo(() => {
-    const query = taskSearch.trim().toLowerCase();
-    return query
-      ? sortedTasks.filter((task) => `${task.title} ${task.description}`.toLowerCase().includes(query))
-      : sortedTasks;
-  }, [sortedTasks, taskSearch]);
+  const sortedTasks = useMemo(
+    () => getSortedTasks(tasks.filter((task) => !task.free)),
+    [tasks],
+  );
+  const visibleCatalogTasks = useMemo(
+    () =>
+      searchTaskCatalog({
+        category: selectedCategory,
+        query: taskSearch,
+      }),
+    [selectedCategory, taskSearch],
+  );
+  const visibleCatalogPage = visibleCatalogTasks.slice(0, visibleCatalogCount);
+  const requiredTaskCount = getRequiredPlayableTaskCount(boardSize, freeSpace);
+  const selectedTaskCount = sortedTasks.length;
+  const selectedCapacity =
+    boardMode === "shared"
+      ? requiredTaskCount
+      : groups.length > 0
+        ? requiredTaskCount * groups.length
+        : requiredTaskCount;
+  const nextShuffleUseCount = Math.min(selectedTaskCount, selectedCapacity);
+  const canAddMore =
+    !boardsLocked &&
+    selectedTaskCount < (boardMode === "shared" ? requiredTaskCount : 100);
+  const hasEnoughTasks = selectedTaskCount >= requiredTaskCount;
+  const canShuffle =
+    !boardsLocked &&
+    hasEnoughTasks &&
+    (playMode === "individual" || groups.length > 0);
+  const progressValue = Math.min(1, selectedTaskCount / requiredTaskCount);
+  const selectedTaskIds = new Set(sortedTasks.map((task) => task.id));
   const assignedCounts = useMemo(() => {
     const counts = new Map<string, number>();
 
@@ -5032,6 +5148,10 @@ function BoardEditor({
   }, [submissions]);
 
   useEffect(() => {
+    setVisibleCatalogCount(30);
+  }, [selectedCategory, taskSearch]);
+
+  useEffect(() => {
     if (groups.length > 0 && !groups.some((group) => group.id === selectedGroupId)) {
       setSelectedGroupId(groups[0].id);
     }
@@ -5039,6 +5159,18 @@ function BoardEditor({
 
   const selectedGroup =
     groups.find((group) => group.id === selectedGroupId) ?? groups[0] ?? null;
+
+  function saveBoardSetup(
+    patch: Partial<Pick<Game, "boardSize" | "boardMode" | "freeSpace">>,
+  ) {
+    const nextBoardSize = patch.boardSize ?? boardSize;
+    onUpdateBoardSetup({
+      boardSize: nextBoardSize,
+      boardMode: patch.boardMode ?? boardMode,
+      freeSpace:
+        nextBoardSize % 2 === 1 ? patch.freeSpace ?? freeSpace : false,
+    });
+  }
 
   return (
     <section
@@ -5054,7 +5186,7 @@ function BoardEditor({
           </div>
           <div className="board-editor-heading-actions">
             <span>
-              {boardsLocked ? "Assignments locked" : `${tasks.length} pool tasks`}
+              {boardsLocked ? "Assignments locked" : `${selectedTaskCount} selected tasks`}
             </span>
             <button
               aria-controls="board-editor-body"
@@ -5079,107 +5211,396 @@ function BoardEditor({
             </p>
           )}
 
-          <div className="board-editor-toolbar">
+          <div className="board-builder-setup" aria-label="Board setup">
+            <strong>Board setup</strong>
+            <fieldset>
+              <legend>Board size</legend>
+              <div className="board-choice-group">
+                {([3, 4, 5] as const).map((size) => (
+                  <button
+                    key={size}
+                    aria-pressed={boardSize === size}
+                    className={boardSize === size ? "is-active" : ""}
+                    disabled={boardsLocked}
+                    type="button"
+                    onClick={() => saveBoardSetup({ boardSize: size })}
+                  >
+                    {size}×{size}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Boards</legend>
+              <div className="board-choice-group board-mode-choices">
+                <button
+                  aria-pressed={boardMode === "shared"}
+                  className={boardMode === "shared" ? "is-active" : ""}
+                  disabled={boardsLocked}
+                  type="button"
+                  onClick={() => saveBoardSetup({ boardMode: "shared" })}
+                >
+                  Same for everyone
+                </button>
+                <button
+                  aria-pressed={boardMode === "randomized"}
+                  className={boardMode === "randomized" ? "is-active" : ""}
+                  disabled={boardsLocked}
+                  type="button"
+                  onClick={() => saveBoardSetup({ boardMode: "randomized" })}
+                >
+                  Different for each
+                </button>
+              </div>
+            </fieldset>
+            <label className={boardSize % 2 === 0 ? "board-free-choice is-disabled" : "board-free-choice"}>
+              <span>Free center square</span>
+              <input
+                checked={boardSize % 2 === 1 && freeSpace}
+                disabled={boardsLocked || boardSize % 2 === 0}
+                type="checkbox"
+                onChange={(event) => saveBoardSetup({ freeSpace: event.target.checked })}
+              />
+            </label>
+          </div>
+
+          <div className="board-builder-progress" aria-live="polite">
+            <div>
+              <strong>
+                {selectedTaskCount} selected · {requiredTaskCount} minimum
+              </strong>
+              <span>
+                {hasEnoughTasks
+                  ? boardMode === "shared"
+                    ? `${requiredTaskCount} task squares per board · every selected task will be used.`
+                    : `${requiredTaskCount} task squares per board · the next shuffle will use ${nextShuffleUseCount} selected tasks.`
+                  : `${requiredTaskCount} task squares per board · add ${requiredTaskCount - selectedTaskCount} more.`}
+              </span>
+              <span
+                aria-hidden="true"
+                className="board-builder-progress-track"
+              >
+                <span style={{ transform: `scaleX(${progressValue})` }} />
+              </span>
+            </div>
+            <p>
+              {boardMode === "randomized"
+                ? "More selected tasks create less overlap between boards."
+                : "Shared boards use the same tasks in the same places."}
+            </p>
             <button
-              className="primary-action"
-              disabled={boardsLocked || tasks.length === 0 || groups.length === 0}
+              className="primary-action board-shuffle-button"
+              disabled={!canShuffle}
               type="button"
               onClick={onGenerateBoards}
             >
               <Shuffle aria-hidden="true" />
-              Generate boards
-            </button>
-            <button className="secondary-action" type="button" onClick={onAddTask}>
-              <Plus aria-hidden="true" />
-              Add task
+              {boardsNeedShuffle ? "Shuffle boards" : "Shuffle again"}
             </button>
           </div>
 
-          <div className="board-editor-layout">
-            <div className="task-pool-panel">
-              <div className="editor-panel-heading">
-                <strong>Task pool</strong>
-                <span>{sortedTasks.length} total</span>
+          <div className="catalog-builder-layout">
+            <section className="catalog-task-panel" aria-labelledby="catalog-task-heading">
+              <div className="catalog-panel-heading">
+                <div>
+                  <strong id="catalog-task-heading">Choose tasks</strong>
+                  <span>{TASK_CATALOG.length} reviewed ideas</span>
+                </div>
+                <button
+                  className="secondary-action"
+                  disabled={boardsLocked || !canAddMore}
+                  type="button"
+                  onClick={() => setIsCreatingTask((current) => !current)}
+                >
+                  <Plus aria-hidden="true" />
+                  Create custom task
+                </button>
               </div>
 
-              <label className="field task-search-field">
-                <span>Find a task</span>
-                <input type="search" value={taskSearch} placeholder="Search titles or descriptions" onChange={(event) => setTaskSearch(event.target.value)} />
+              {isCreatingTask && (
+                <CustomTaskComposer
+                  onCancel={() => setIsCreatingTask(false)}
+                  onCreate={(task) => {
+                    onAddTask(task);
+                    setIsCreatingTask(false);
+                  }}
+                />
+              )}
+
+              <label className="catalog-search-field">
+                <Search aria-hidden="true" />
+                <span className="sr-only">Search task catalog</span>
+                <input
+                  type="search"
+                  value={taskSearch}
+                  placeholder={`Search ${TASK_CATALOG.length} tasks`}
+                  onChange={(event) => setTaskSearch(event.target.value)}
+                />
               </label>
 
-              <div className="task-pool-list">
-                {visibleTasks.map((task) => (
-                  <TaskPoolRow
+              <div className="catalog-category-filters" aria-label="Filter tasks by category">
+                {(["All", ...TASK_CATEGORIES] as const).map((category) => (
+                  <button
+                    key={category}
+                    aria-pressed={selectedCategory === category}
+                    className={selectedCategory === category ? "is-active" : ""}
+                    type="button"
+                    onClick={() => setSelectedCategory(category)}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+
+              <div className="catalog-task-list">
+                {visibleCatalogPage.map((catalogTask) => (
+                  <CatalogTaskRow
+                    key={catalogTask.id}
+                    canAdd={canAddMore}
+                    isAdded={selectedTaskIds.has(catalogTask.id)}
+                    onAdd={() => onAddCatalogTask(catalogTask.id)}
+                    task={catalogTask}
+                  />
+                ))}
+                {visibleCatalogTasks.length === 0 && (
+                  <div className="empty-state catalog-empty-state">
+                    <Search aria-hidden="true" />
+                    <strong>No matching tasks</strong>
+                    <p>Try another search or create a custom task.</p>
+                  </div>
+                )}
+              </div>
+
+              {visibleCatalogCount < visibleCatalogTasks.length && (
+                <button
+                  className="secondary-action catalog-load-more"
+                  type="button"
+                  onClick={() => setVisibleCatalogCount((count) => count + 30)}
+                >
+                  Load more tasks
+                </button>
+              )}
+            </section>
+
+            <aside className="selected-task-panel" aria-labelledby="selected-task-heading">
+              <div className="catalog-panel-heading">
+                <div>
+                  <strong id="selected-task-heading">Selected tasks</strong>
+                  <span>{selectedTaskCount} selected</span>
+                </div>
+              </div>
+
+              <div className="selected-task-list">
+                {sortedTasks.map((task) => (
+                  <SelectedTaskRow
                     key={task.id}
                     assignedCount={assignedCounts.get(task.id) ?? 0}
                     onRemove={() => onRemoveTask(task.id)}
+                    onReset={
+                      task.catalogId
+                        ? () => onResetCatalogTask(task.id)
+                        : undefined
+                    }
                     onUpdate={(patch) => onUpdateTask(task.id, patch)}
                     proofCount={proofCounts.get(task.id) ?? 0}
                     task={task}
                   />
                 ))}
-              </div>
-            </div>
-
-            <div className="group-board-panel">
-              <div className="editor-panel-heading">
-                <strong>Group boards</strong>
-                <span>{getBoardSlotCount(boardSize)} slots each</span>
-              </div>
-
-              <div className="group-board-tabs" aria-label="Choose group board">
-                {groups.map((group) => (
-                  <button
-                    key={group.id}
-                    className={
-                      selectedGroup?.id === group.id
-                        ? "group-board-tab is-active"
-                        : "group-board-tab"
-                    }
-                    style={{ "--group-color": group.color } as React.CSSProperties}
-                    type="button"
-                    onClick={() => setSelectedGroupId(group.id)}
-                  >
-                    {group.shortName}
-                  </button>
-                ))}
+                {sortedTasks.length === 0 && (
+                  <div className="empty-state selected-task-empty">
+                    <Grid3X3 aria-hidden="true" />
+                    <strong>No tasks selected</strong>
+                    <p>Search the catalog and add the tasks you want.</p>
+                  </div>
+                )}
               </div>
 
-              {selectedGroup ? (
-                <GroupBoardSlotEditor
-                  assignments={boardAssignments}
-                  boardsLocked={boardsLocked}
-                  boardSize={boardSize}
-                  group={selectedGroup}
-                  onSave={(taskIds) => onSaveGroupBoard(selectedGroup.id, taskIds)}
-                  tasks={sortedTasks}
-                />
-              ) : (
-                <div className="empty-state">
-                  <Users aria-hidden="true" />
-                  <strong>No groups yet</strong>
-                  <p>Add groups before building varied boards.</p>
-                </div>
+              {boardMode === "randomized" && selectedTaskCount >= 100 && (
+                <p className="catalog-limit-note">
+                  This room has the maximum 100 selected tasks.
+                </p>
               )}
-            </div>
+
+              <details className="fine-tune-boards">
+                <summary>
+                  <span>
+                    <strong>Fine-tune boards</strong>
+                    <small>Adjust task placement after shuffling</small>
+                  </span>
+                  <ChevronDown aria-hidden="true" />
+                </summary>
+                <div className="fine-tune-board-body">
+                  <div className="group-board-tabs" aria-label="Choose group board">
+                    {groups.map((group) => (
+                      <button
+                        key={group.id}
+                        className={
+                          selectedGroup?.id === group.id
+                            ? "group-board-tab is-active"
+                            : "group-board-tab"
+                        }
+                        style={{ "--group-color": group.color } as React.CSSProperties}
+                        type="button"
+                        onClick={() => setSelectedGroupId(group.id)}
+                      >
+                        {group.shortName}
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedGroup ? (
+                    <GroupBoardSlotEditor
+                      assignments={boardAssignments}
+                      boardsLocked={boardsLocked}
+                      boardSize={boardSize}
+                      group={selectedGroup}
+                      onSave={(taskIds) => onSaveGroupBoard(selectedGroup.id, taskIds)}
+                      tasks={getSortedTasks(tasks)}
+                    />
+                  ) : (
+                    <div className="empty-state">
+                      <Users aria-hidden="true" />
+                      <strong>
+                        {playMode === "individual" ? "No players yet" : "No teams yet"}
+                      </strong>
+                      <p>
+                        {playMode === "individual"
+                          ? "Player boards will be created as people join."
+                          : "Add a team before shuffling boards."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </details>
+            </aside>
           </div>
+
+          {!boardsNeedShuffle && hasEnoughTasks && (
+            <p className="board-ready-message" role="status">
+              <Check aria-hidden="true" />
+              Boards are shuffled and ready to review.
+            </p>
+          )}
         </div>
       )}
     </section>
   );
 }
 
-function TaskPoolRow({
+function CatalogTaskRow({
+  canAdd,
+  isAdded,
+  onAdd,
+  task,
+}: {
+  canAdd: boolean;
+  isAdded: boolean;
+  onAdd: () => void;
+  task: CatalogTask;
+}) {
+  const Icon = ICONS[task.icon] ?? Circle;
+
+  return (
+    <article className="catalog-task-row">
+      <span className="task-pool-icon"><Icon aria-hidden="true" /></span>
+      <span>
+        <strong>{task.title}</strong>
+        <small>{task.description}</small>
+      </span>
+      <em>{task.category}</em>
+      <button
+        className={isAdded ? "catalog-added-button" : "secondary-action"}
+        disabled={isAdded || !canAdd}
+        type="button"
+        onClick={onAdd}
+      >
+        {isAdded ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}
+        {isAdded ? "Added" : "Add to boards"}
+      </button>
+    </article>
+  );
+}
+
+function CustomTaskComposer({
+  onCancel,
+  onCreate,
+}: {
+  onCancel: () => void;
+  onCreate: (task: { title: string; description: string; icon: string }) => void;
+}) {
+  const [draft, setDraft] = useState({
+    title: "",
+    description: "",
+    icon: "Camera",
+  });
+
+  return (
+    <form
+      className="custom-task-composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!draft.title.trim()) return;
+        onCreate({
+          title: draft.title.trim(),
+          description: draft.description.trim(),
+          icon: draft.icon,
+        });
+      }}
+    >
+      <label className="stop-field">
+        <span>Task title</span>
+        <input
+          autoFocus
+          maxLength={80}
+          value={draft.title}
+          onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+        />
+      </label>
+      <label className="stop-field">
+        <span>Instructions</span>
+        <textarea
+          maxLength={300}
+          value={draft.description}
+          onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+        />
+      </label>
+      <label className="stop-field">
+        <span>Icon</span>
+        <select
+          value={draft.icon}
+          onChange={(event) => setDraft({ ...draft, icon: event.target.value })}
+        >
+          {TASK_ICON_OPTIONS.map((icon) => (
+            <option key={icon} value={icon}>{icon}</option>
+          ))}
+        </select>
+      </label>
+      <div>
+        <button className="secondary-action" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary-action" disabled={!draft.title.trim()} type="submit">
+          <Plus aria-hidden="true" />
+          Add custom task
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SelectedTaskRow({
   assignedCount,
   onRemove,
+  onReset,
   onUpdate,
   proofCount,
   task,
 }: {
   assignedCount: number;
   onRemove: () => void;
+  onReset?: () => void;
   onUpdate: (
-    patch: Partial<Pick<Task, "title" | "description" | "icon" | "free">>,
+    patch: Partial<Pick<Task, "title" | "description" | "icon">>,
   ) => void;
   proofCount: number;
   task: Task;
@@ -5188,89 +5609,89 @@ function TaskPoolRow({
     title: task.title,
     description: task.description,
     icon: task.icon,
-    free: Boolean(task.free),
   });
   const Icon = ICONS[draft.icon] ?? Circle;
-  const isRemoveDisabled = assignedCount > 0 || proofCount > 0;
+  const catalogTask = task.catalogId ? getCatalogTask(task.catalogId) : null;
+  const isEdited = Boolean(
+    catalogTask &&
+      (catalogTask.title !== task.title ||
+        catalogTask.description !== task.description ||
+        catalogTask.icon !== task.icon),
+  );
   const hasChanges =
     draft.title !== task.title ||
     draft.description !== task.description ||
-    draft.icon !== task.icon ||
-    draft.free !== Boolean(task.free);
+    draft.icon !== task.icon;
 
   useEffect(() => {
     setDraft({
       title: task.title,
       description: task.description,
       icon: task.icon,
-      free: Boolean(task.free),
     });
   }, [task]);
 
   return (
-    <details className="task-pool-row">
-      <summary className="task-pool-summary">
+    <details className="selected-task-row">
+      <summary>
         <span className="task-pool-icon"><Icon aria-hidden="true" /></span>
-        <span><strong>{task.title}</strong><small>{task.description}</small></span>
-        <em>{assignedCount} boards</em>
-        <ChevronDown aria-hidden="true" />
+        <span>
+          <strong>
+            {task.title}
+            {isEdited && <em>Edited</em>}
+          </strong>
+          <small>{catalogTask?.category ?? "Custom"}</small>
+        </span>
+        <span className="selected-task-summary-actions">
+          <span>Edit</span>
+          <ChevronDown aria-hidden="true" />
+        </span>
       </summary>
 
-      <div className="task-pool-fields task-pool-edit-fields">
+      <div className="selected-task-edit-fields">
         <label className="stop-field">
           <span>Title</span>
           <input
+            maxLength={80}
             value={draft.title}
             onChange={(event) => setDraft({ ...draft, title: event.target.value })}
           />
         </label>
-
         <label className="stop-field">
-          <span>Description</span>
+          <span>Instructions</span>
           <textarea
+            maxLength={300}
             value={draft.description}
-            onChange={(event) =>
-              setDraft({ ...draft, description: event.target.value })
-            }
+            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
           />
         </label>
-
-        <div className="task-pool-meta">
-          <label className="stop-field">
-            <span>Icon</span>
-            <select
-              value={draft.icon}
-              onChange={(event) => setDraft({ ...draft, icon: event.target.value })}
-            >
-              {TASK_ICON_OPTIONS.map((icon) => (
-                <option key={icon} value={icon}>
-                  {icon}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="task-free-toggle">
-            <input
-              checked={draft.free}
-              type="checkbox"
-              onChange={(event) =>
-                setDraft({ ...draft, free: event.target.checked })
-              }
-            />
-            Free square
-          </label>
-        </div>
-
-        <div className="task-pool-actions">
+        <label className="stop-field">
+          <span>Icon</span>
+          <select
+            value={draft.icon}
+            onChange={(event) => setDraft({ ...draft, icon: event.target.value })}
+          >
+            {TASK_ICON_OPTIONS.map((icon) => (
+              <option key={icon} value={icon}>{icon}</option>
+            ))}
+          </select>
+        </label>
+        <div className="selected-task-edit-actions">
           <span>
-            {assignedCount} boards
-            {proofCount > 0 ? `, ${proofCount} proofs` : ""}
+            {assignedCount} board{assignedCount === 1 ? "" : "s"}
+            {proofCount > 0 ? ` · ${proofCount} proofs` : ""}
           </span>
           <div>
+            {isEdited && onReset && (
+              <button className="secondary-action" type="button" onClick={onReset}>
+                <TimerReset aria-hidden="true" />
+                Reset
+              </button>
+            )}
             <button
+              aria-label={`Remove ${task.title}`}
               className="secondary-action remove-stop-button"
-              disabled={isRemoveDisabled}
+              disabled={proofCount > 0}
               type="button"
               onClick={onRemove}
             >
@@ -7022,6 +7443,16 @@ function generateGroupBoards(
 
 function getBoardSlotCount(boardSize: BoardSize) {
   return boardSize * boardSize;
+}
+
+function getRequiredPlayableTaskCount(
+  boardSize: BoardSize,
+  freeSpace: boolean,
+) {
+  return (
+    getBoardSlotCount(boardSize) -
+    (freeSpace && boardSize % 2 === 1 ? 1 : 0)
+  );
 }
 
 function getBoardCenterSlot(boardSize: BoardSize) {

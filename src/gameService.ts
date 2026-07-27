@@ -25,6 +25,7 @@ export type Group = {
 
 export type Task = {
   id: string;
+  catalogId?: string;
   title: string;
   description: string;
   icon: string;
@@ -63,6 +64,7 @@ export type Game = {
   boardSize: BoardSize;
   boardMode: BoardMode;
   freeSpace: boolean;
+  boardsNeedShuffle: boolean;
   proofMode: ProofMode;
   approvalMode: ApprovalMode;
   timerMode: TimerMode;
@@ -388,6 +390,13 @@ export function addTask({
   });
 }
 
+export function addCatalogTask(gameId: string, catalogTaskId: string) {
+  return action<Task>(requireCode(gameId), "addCatalogTask", {
+    gameId,
+    catalogTaskId,
+  });
+}
+
 export function updateTaskDetails(
   gameId: string,
   taskId: string,
@@ -396,8 +405,35 @@ export function updateTaskDetails(
   return action<Task>(requireCode(gameId), "updateTask", { gameId, taskId, patch });
 }
 
+export function resetCatalogTask(gameId: string, taskId: string) {
+  return action<Task>(requireCode(gameId), "resetCatalogTask", { gameId, taskId });
+}
+
 export function removeTask(gameId: string, taskId: string) {
   return action<void>(requireCode(gameId), "removeTask", { gameId, taskId });
+}
+
+export function updateBoardSetup({
+  gameId,
+  boardSize,
+  boardMode,
+  freeSpace,
+}: {
+  gameId: string;
+  boardSize: BoardSize;
+  boardMode: BoardMode;
+  freeSpace: boolean;
+}) {
+  return action<Game>(requireCode(gameId), "updateBoardSetup", {
+    gameId,
+    boardSize,
+    boardMode,
+    freeSpace,
+  });
+}
+
+export function shuffleBoards(gameId: string) {
+  return action<BoardAssignment[]>(requireCode(gameId), "shuffleBoards", { gameId });
 }
 
 export function setGroupBoardTasks({
