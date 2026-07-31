@@ -69,3 +69,28 @@ Broad school distribution still requires:
 - School or district approval for notices, nicknames, optional photos,
   deletion, and exports.
 - Live post-deployment checks after an explicitly approved release.
+
+## Follow-up — July 27, 2026
+
+This follow-up records later work without changing the July 26 findings,
+verification evidence, or release decision above.
+
+- Finding 2's July 26 remediation was a fully host-only export rule. The current
+  worktree keeps that as the default and adds a narrower host-authorized player
+  presentation option. Authorization must happen before the hunt; use is limited
+  to the same team's current board after review and board reveal, and every
+  player export requires confirmation that a separate copy will be retained.
+  Full rosters, cross-team data, and proof ZIPs remain host-only.
+- Google export now loads Google's code only after the user chooses that action,
+  requests account selection on every attempt, and does not cache the
+  short-lived access token. Room deletion and expiry still cannot recall a
+  presentation already downloaded or created in Drive.
+- The current release tooling adds repeatable multi-user desktop/phone browser
+  journeys, CI verification, non-deploying release preflight, a generated
+  release identity manifest, and read-only post-deployment checks.
+- This follow-up is local worktree evidence, not a claim that the current
+  revision is deployed or externally approved. A fresh intended-release
+  preflight and CI run still need to be recorded. Google Cloud/OAuth/Drive,
+  Cloudflare production ownership and deployment, custom domain/TLS, physical
+  devices, a screen reader, a Chromebook, a school network, and school/privacy
+  approvals remain unchecked external gates.

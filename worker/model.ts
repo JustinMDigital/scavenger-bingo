@@ -5,6 +5,7 @@ export type WinCondition = "blackout" | "bingo";
 export type BoardMode = "shared" | "randomized";
 export type ProofMode = "required" | "optional" | "none";
 export type ApprovalMode = "host" | "automatic";
+export type PlayerExportMode = "host-only" | "team-after-review";
 export type TimerMode = "none" | "duration" | "schedule";
 export type BoardSize = 3 | 4 | 5;
 export const MAX_PLAYABLE_TASKS_PER_ROOM = 100;
@@ -28,6 +29,7 @@ export type StoredGame = {
   boardsNeedShuffle: boolean;
   proofMode: ProofMode;
   approvalMode: ApprovalMode;
+  playerExportMode: PlayerExportMode;
   timerMode: TimerMode;
   timerDurationMinutes: number;
   lobbyOpen: boolean;
@@ -95,6 +97,7 @@ export type StoredSubmission = {
 
 export type StoredRoom = {
   version: 2;
+  revision: number;
   createdAt: number;
   expiresAt: number;
   pinSalt: string;
@@ -181,6 +184,7 @@ export function createStarterRoom({
 
   return {
     version: 2,
+    revision: 0,
     createdAt: now,
     expiresAt: now + 7 * 24 * 60 * 60 * 1000,
     pinSalt,
@@ -204,6 +208,7 @@ export function createStarterRoom({
       boardsNeedShuffle: true,
       proofMode: "none",
       approvalMode: "host",
+      playerExportMode: "host-only",
       timerMode: "none",
       timerDurationMinutes: 60,
       lobbyOpen: true,
@@ -324,6 +329,9 @@ export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): S
   const isLegacy = Number((storedRoom as { version?: number }).version ?? 1) < 2;
 
   room.version = 2;
+  room.revision = normalizeRoomRevision(
+    (storedRoom as { revision?: unknown }).revision,
+  );
   room.game = {
     ...legacyGame,
     setupComplete: legacyGame.setupComplete ?? isLegacy,
@@ -336,6 +344,7 @@ export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): S
       legacyGame.boardsNeedShuffle ?? room.boardAssignments.length === 0,
     proofMode: legacyGame.proofMode ?? "required",
     approvalMode: legacyGame.approvalMode ?? "host",
+    playerExportMode: legacyGame.playerExportMode ?? "host-only",
     timerMode: legacyGame.timerMode ?? (room.stops.length > 0 ? "schedule" : "none"),
     timerDurationMinutes: legacyGame.timerDurationMinutes ?? 60,
     lobbyOpen: legacyGame.lobbyOpen ?? true,
@@ -348,6 +357,11 @@ export function upgradeRoom(storedRoom: StoredRoom | Record<string, unknown>): S
       : {}),
   }));
   return room;
+}
+
+function normalizeRoomRevision(value: unknown) {
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
 }
 
 export function toPublicGroup(groupValue: StoredGroup) {

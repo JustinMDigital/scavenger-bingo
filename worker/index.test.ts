@@ -1,5 +1,6 @@
-import { exports as workerExports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { env, exports as workerExports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
 import { GAME_KITS } from "../src/gameKits";
 import { TASK_CATALOG } from "../src/taskCatalog";
 import { createStarterRoom, createStarterTasks, upgradeRoom } from "./model";
@@ -19,12 +20,24 @@ const VALID_PNG_BYTES = Uint8Array.from(
 describe("Cloudflare game room", () => {
   it("reports a narrow unauthenticated health signal", async () => {
     const response = await workerFetch(`${ORIGIN}/api/health`);
+    const body = await response.json<{
+      ok: boolean;
+      backend: string;
+      deployment: null | { id: string; tag: string; timestamp: string };
+    }>();
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
+    expect(body).toMatchObject({
       ok: true,
       backend: "cloudflare-durable-objects",
     });
+    if (body.deployment) {
+      expect(body.deployment).toEqual({
+        id: expect.any(String),
+        tag: expect.any(String),
+        timestamp: expect.any(String),
+      });
+    }
   });
 
   it("upgrades legacy fixed rooms without losing their existing data", () => {
@@ -38,9 +51,10 @@ describe("Cloudflare game room", () => {
     const legacyGame = legacyRoom.game as unknown as Record<string, unknown>;
     legacyRoom.tasks = createStarterTasks();
     legacyRecord.version = 1;
+    delete legacyRecord.revision;
     for (const key of [
       "setupComplete", "playMode", "winCondition", "boardSize", "boardMode",
-      "freeSpace", "proofMode", "approvalMode", "timerMode",
+      "freeSpace", "proofMode", "approvalMode", "playerExportMode", "timerMode",
       "timerDurationMinutes", "lobbyOpen", "teamsLocked",
     ]) delete legacyGame[key];
     legacyRoom.memberships.push({
@@ -55,10 +69,12 @@ describe("Cloudflare game room", () => {
 
     const upgraded = upgradeRoom(legacyRecord);
     expect(upgraded.version).toBe(2);
+    expect(upgraded.revision).toBe(0);
     expect(upgraded.game.setupComplete).toBe(true);
     expect(upgraded.game.playMode).toBe("teams");
     expect(upgraded.game.winCondition).toBe("blackout");
     expect(upgraded.game.boardSize).toBe(5);
+    expect(upgraded.game.playerExportMode).toBe("host-only");
     expect(upgraded.tasks).toHaveLength(42);
     expect(upgraded.memberships[0].isOwner).toBe(true);
   });
@@ -80,6 +96,7 @@ describe("Cloudflare game room", () => {
     expect(hostState.boardAssignments).toHaveLength(0);
     expect(hostState.stops).toHaveLength(0);
     expect(hostState.game.timerMode).toBe("none");
+    expect(hostState.game.playerExportMode).toBe("host-only");
     expect(hostState.tasks.filter((task) => task.id !== "free")).toHaveLength(0);
 
     const configured = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
@@ -97,6 +114,27 @@ describe("Cloudflare game room", () => {
     expect(configuredState.stops).toHaveLength(3);
     expect(configuredState.stops[0].arriveTime).toBe("2:00 PM");
     expect(configuredState.game.boardHidden).toBe(true);
+    expect(configuredState.game.playerExportMode).toBe("host-only");
+
+    const enablePlayerRecaps = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "configureGame",
+        payload: {
+          gameId: configuredState.game.id,
+          config: { playerExportMode: "team-after-review" },
+        },
+      },
+    );
+    expect(enablePlayerRecaps.status).toBe(200);
+    expect(
+      (
+        await (
+          await get("/api/games/CF-TEST", HOST_COOKIE)
+        ).json<GameState>()
+      ).game.playerExportMode,
+    ).toBe("team-after-review");
 
     const wrongPin = await postJson("/api/games/CF-TEST/host", OTHER_COOKIE, {
       pin: "9999",
@@ -109,6 +147,7 @@ describe("Cloudflare game room", () => {
     expect(publicState.membership).toBeNull();
     expect(publicState.roster).toEqual([]);
     expect(publicState.submissions).toEqual([]);
+    expect(publicState.boardAssignments).toEqual([]);
 
     const playerJoin = await postJson("/api/games/CF-TEST/join", PLAYER_COOKIE, {
       gameId: configuredState.game.id,
@@ -167,6 +206,19 @@ describe("Cloudflare game room", () => {
       (item) => item.groupId === "team-1" && item.slotOrder === 1,
     );
     expect(assignedTask).toBeDefined();
+
+    const unauthorizedOversizedProof = await SELF_FETCH(
+      `${ORIGIN}/api/games/CF-TEST/proofs`,
+      {
+        method: "POST",
+        headers: {
+          ...proofHeaders(assignedTask!.taskId),
+          cookie: OTHER_COOKIE,
+        },
+        body: new Uint8Array(500 * 1024 + 1),
+      },
+    );
+    expect(unauthorizedOversizedProof.status).toBe(403);
 
     const oversizedProof = await SELF_FETCH(`${ORIGIN}/api/games/CF-TEST/proofs`, {
       method: "POST",
@@ -243,6 +295,10 @@ describe("Cloudflare game room", () => {
     );
     expect(hostProof.status).toBe(200);
     expect(hostProof.headers.get("content-type")).toBe("image/png");
+    expect(hostProof.headers.get("cache-control")).toBe(
+      "private, no-store, max-age=0",
+    );
+    expect(hostProof.headers.get("pragma")).toBe("no-cache");
     expect(hostProof.headers.get("content-disposition")).toContain(
       'filename="misleading-name.png"',
     );
@@ -262,6 +318,9 @@ describe("Cloudflare game room", () => {
     expect(playerState.submissions[0].status).toBe("approved");
     expect(playerState.submissions[0].submittedBy).toBe(playerJoinBody.data.id);
     expect(playerState.submissions[0].submittedBy).not.toContain("session");
+    expect(
+      new Set(playerState.boardAssignments.map((item) => item.groupId)),
+    ).toEqual(new Set(["team-1"]));
 
     const markSubmitted = await postJson(
       "/api/games/CF-TEST/actions",
@@ -282,6 +341,68 @@ describe("Cloudflare game room", () => {
       await get("/api/games/CF-TEST", OTHER_COOKIE)
     ).json<GameState>();
     expect(otherState.submissions).toEqual([]);
+
+    const unsafeReset = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "resetGameProofs",
+        payload: {
+          gameId: configuredState.game.id,
+          patch: { name: "Unsupported reset change" },
+        },
+      },
+    );
+    expect(unsafeReset.status).toBe(400);
+    expect(
+      (
+        await (
+          await get("/api/games/CF-TEST", HOST_COOKIE)
+        ).json<GameState>()
+      ).submissions,
+    ).toHaveLength(1);
+    expect(
+      await get(
+        `/api/games/CF-TEST/proofs/${proofBody.data.id}`,
+        HOST_COOKIE,
+      ),
+    ).toHaveProperty("status", 200);
+
+    const reset = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "resetGameProofs",
+        payload: {
+          gameId: configuredState.game.id,
+          patch: {
+            activeStopId: null,
+            phase: "play",
+            timerRunning: false,
+            timerStartedAt: "2026-07-27T12:00:00.000Z",
+            timerSecondsTotal: 0,
+            boardHidden: true,
+          },
+        },
+      },
+    );
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toEqual({
+      data: { deletedImages: 1, deletedSubmissions: 1 },
+    });
+    const resetState = await (
+      await get("/api/games/CF-TEST", HOST_COOKIE)
+    ).json<GameState>();
+    expect(resetState.revision).toBe(otherState.revision + 1);
+    expect(resetState.submissions).toEqual([]);
+    expect(resetState.game).toMatchObject({
+      activeStopId: null,
+      phase: "play",
+      timerRunning: false,
+      timerStartedAt: "2026-07-27T12:00:00.000Z",
+      timerSecondsTotal: 0,
+      boardHidden: true,
+    });
 
     const deletion = await postJson("/api/games/CF-TEST/actions", HOST_COOKIE, {
       action: "deletePlayerData",
@@ -876,6 +997,298 @@ describe("Cloudflare game room", () => {
     sockets.forEach((socket) => socket.close(1000, "Test complete"));
   });
 
+  it("orders successful actions in room state and live update messages", async () => {
+    const hostCookie = "scavenger_session=revision-host-session-0000001";
+    expect((await postJson("/api/games/REVISION-TEST/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Revision Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/REVISION-TEST", hostCookie)
+    ).json<GameState>();
+    expect(initial.revision).toBeGreaterThan(0);
+
+    const socketResponse = await getWebSocket(
+      "/api/games/REVISION-TEST/ws",
+      hostCookie,
+    );
+    expect(socketResponse.status).toBe(101);
+    const socket = (socketResponse as Response & { webSocket?: WebSocket }).webSocket!;
+    (socket as WebSocket & { accept: () => void }).accept();
+
+    const firstMessage = nextWebSocketMessage(socket);
+    expect((await postJson("/api/games/REVISION-TEST/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: { lobbyOpen: false },
+      },
+    })).status).toBe(200);
+    const firstUpdate = JSON.parse(await firstMessage) as {
+      type: string;
+      reason: string;
+      revision: number;
+    };
+    expect(firstUpdate).toEqual({
+      type: "room-change",
+      reason: "change",
+      revision: initial.revision + 1,
+    });
+
+    const secondMessage = nextWebSocketMessage(socket);
+    expect((await postJson("/api/games/REVISION-TEST/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: { lobbyOpen: true },
+      },
+    })).status).toBe(200);
+    const secondUpdate = JSON.parse(await secondMessage) as {
+      revision: number;
+    };
+    expect(secondUpdate.revision).toBe(firstUpdate.revision + 1);
+
+    const afterActions = await (
+      await get("/api/games/REVISION-TEST", hostCookie)
+    ).json<GameState>();
+    expect(afterActions.revision).toBe(secondUpdate.revision);
+
+    expect((await postJson("/api/games/REVISION-TEST/actions", hostCookie, {
+      action: "notAnAction",
+      payload: {},
+    })).status).toBe(400);
+    const afterRejectedAction = await (
+      await get("/api/games/REVISION-TEST", hostCookie)
+    ).json<GameState>();
+    expect(afterRejectedAction.revision).toBe(afterActions.revision);
+
+    socket.close(1000, "Test complete");
+  });
+
+  it("serializes concurrent room changes without losing either update", async () => {
+    const hostCookie = "scavenger_session=concurrent-host-session-00001";
+    expect((await postJson("/api/games/CONCURRENT/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Concurrent Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/CONCURRENT", hostCookie)
+    ).json<GameState>();
+
+    const [rename, closeLobby] = await Promise.all([
+      postJson("/api/games/CONCURRENT/actions", hostCookie, {
+        action: "updateGame",
+        payload: {
+          gameId: initial.game.id,
+          patch: { name: "Both updates survived" },
+        },
+      }),
+      postJson("/api/games/CONCURRENT/actions", hostCookie, {
+        action: "updateGame",
+        payload: {
+          gameId: initial.game.id,
+          patch: { lobbyOpen: false },
+        },
+      }),
+    ]);
+
+    expect(rename.status).toBe(200);
+    expect(closeLobby.status).toBe(200);
+    const finalState = await (
+      await get("/api/games/CONCURRENT", hostCookie)
+    ).json<GameState>();
+    expect(finalState.revision).toBe(initial.revision + 2);
+    expect(finalState.game.name).toBe("Both updates survived");
+    expect(finalState.game.lobbyOpen).toBe(false);
+  });
+
+  it("keeps player presentations host-controlled and prevents late enablement", async () => {
+    const hostCookie = "scavenger_session=export-host-session-000000001";
+    const playerCookie = "scavenger_session=export-player-session-0000001";
+    expect((await postJson("/api/games/EXPORT-POLICY/host", hostCookie, {
+      pin: "24682468",
+      displayName: "Export Host",
+    })).status).toBe(200);
+    const initial = await (
+      await get("/api/games/EXPORT-POLICY", hostCookie)
+    ).json<GameState>();
+    expect(initial.game.playerExportMode).toBe("host-only");
+
+    const invalidConfiguration = await postJson(
+      "/api/games/EXPORT-POLICY/actions",
+      hostCookie,
+      {
+        action: "configureGame",
+        payload: {
+          gameId: initial.game.id,
+          config: {
+            name: "Rejected partial configuration",
+            playerExportMode: "team-after-review",
+            timerMode: "invalid",
+          },
+        },
+      },
+    );
+    expect(invalidConfiguration.status).toBe(400);
+    expect(
+      await (
+        await get("/api/games/EXPORT-POLICY", hostCookie)
+      ).json<GameState>(),
+    ).toEqual(initial);
+
+    const invalidTemplate = await postJson(
+      "/api/games/EXPORT-POLICY/actions",
+      hostCookie,
+      {
+        action: "configureGame",
+        payload: {
+          gameId: initial.game.id,
+          template: "not-a-real-template",
+        },
+      },
+    );
+    expect(invalidTemplate.status).toBe(400);
+    expect(
+      await (
+        await get("/api/games/EXPORT-POLICY", hostCookie)
+      ).json<GameState>(),
+    ).toEqual(initial);
+
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", playerCookie, {
+      action: "configureGame",
+      payload: {
+        gameId: initial.game.id,
+        config: { playerExportMode: "team-after-review" },
+      },
+    })).status).toBe(403);
+
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "configureGame",
+      payload: {
+        gameId: initial.game.id,
+        config: { playerExportMode: "team-after-review" },
+      },
+    })).status).toBe(200);
+
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: { setupComplete: true },
+      },
+    })).status).toBe(200);
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: { playerExportMode: "host-only" },
+      },
+    })).status).toBe(200);
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: {
+          name: "Rejected partial update",
+          boardHidden: false,
+          playerExportMode: "team-after-review",
+        },
+      },
+    })).status).toBe(409);
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: {
+          setupComplete: false,
+          playerExportMode: "team-after-review",
+        },
+      },
+    })).status).toBe(409);
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: initial.game.id,
+        patch: { setupComplete: false },
+      },
+    })).status).toBe(409);
+    expect((await postJson("/api/games/EXPORT-POLICY/actions", hostCookie, {
+      action: "configureGame",
+      payload: {
+        gameId: initial.game.id,
+        config: { setupComplete: false },
+      },
+    })).status).toBe(409);
+    const afterBypassAttempt = await (
+      await get("/api/games/EXPORT-POLICY", hostCookie)
+    ).json<GameState>();
+    expect(afterBypassAttempt.game.setupComplete).toBe(true);
+    expect(afterBypassAttempt.game.playerExportMode).toBe("host-only");
+    expect(afterBypassAttempt.game.name).not.toBe("Rejected partial update");
+    expect(afterBypassAttempt.game.boardHidden).toBe(true);
+  });
+
+  it("deletes expired room and proof data when registry release fails", async () => {
+    const code = "EXPIRY-TEST";
+    const hostCookie = "scavenger_session=expiry-host-session-000000001";
+    expect((await postJson(`/api/games/${code}/host`, hostCookie, {
+      pin: "24682468",
+      displayName: "Expiry Host",
+    })).status).toBe(200);
+    const socketResponse = await getWebSocket(`/api/games/${code}/ws`, hostCookie);
+    expect(socketResponse.status).toBe(101);
+    const socket = (socketResponse as Response & { webSocket?: WebSocket }).webSocket!;
+    (socket as WebSocket & { accept: () => void }).accept();
+    const expiryMessage = nextWebSocketMessage(socket);
+
+    const roomStub = env.GAME_ROOMS.get(env.GAME_ROOMS.idFromName(code));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await runInDurableObject(roomStub, async (instance, state) => {
+        await state.storage.put(
+          "proof:private-expiry-test",
+          Uint8Array.from([1, 2, 3]).buffer,
+        );
+        Object.defineProperty(instance, "releaseRegistry", {
+          configurable: true,
+          value: async () => {
+            throw new Error("Simulated registry failure with private details");
+          },
+        });
+
+        await instance.alarm();
+
+        expect(await state.storage.list()).toHaveProperty("size", 0);
+        expect(
+          await instance.fetch(
+            new Request("https://room.internal/internal/exists"),
+          ),
+        ).toHaveProperty("status", 404);
+      });
+
+      const expiryWarnings = warning.mock.calls.filter(
+        ([message]) => message === "Scavenger Bingo operational event",
+      );
+      expect(expiryWarnings).toContainEqual([
+        "Scavenger Bingo operational event",
+        {
+          event: "room_expiry_registry_release_failed",
+          localCleanupContinued: true,
+        },
+      ]);
+      expect(JSON.stringify(expiryWarnings)).not.toContain(code);
+      expect(JSON.stringify(expiryWarnings)).not.toContain("private-expiry-test");
+      expect(JSON.parse(await expiryMessage)).toEqual({
+        type: "room-change",
+        reason: "expired",
+      });
+      expect((await get(`/api/games/${code}`, hostCookie)).status).toBe(404);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("rehearses leaked-code containment, photo deletion, and room shutdown", async () => {
     const hostCookie = "scavenger_session=incident-host-session-00000001";
     const studentCookie = "scavenger_session=incident-student-session-00001";
@@ -979,6 +1392,7 @@ describe("Cloudflare game room", () => {
       expect(state.game.winCondition).toBe(kit.winCondition);
       expect(state.game.boardSize).toBe(kit.boardSize);
       expect(state.game.timerDurationMinutes).toBe(kit.timerDurationMinutes);
+      expect(state.game.playerExportMode).toBe("host-only");
       expect(state.groups).toHaveLength(kit.teamCount);
       expect(state.tasks).toHaveLength(kit.tasks?.length ?? 42);
       expect(new Set(state.tasks.map((task) => task.id)).size).toBe(state.tasks.length);
@@ -1166,6 +1580,19 @@ function getWebSocket(path: string, cookie: string) {
   });
 }
 
+function nextWebSocketMessage(socket: WebSocket) {
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Timed out waiting for a live room update.")),
+      2_000,
+    );
+    socket.addEventListener("message", (event) => {
+      clearTimeout(timeout);
+      resolve(String(event.data));
+    }, { once: true });
+  });
+}
+
 function postJson(path: string, cookie: string, body: unknown) {
   return workerFetch(`${ORIGIN}${path}`, {
     method: "POST",
@@ -1210,9 +1637,16 @@ function workerFetch(input: string, init?: RequestInit) {
 const SELF_FETCH = workerFetch;
 
 type GameState = {
+  revision: number;
   game: {
     id: string;
     name: string;
+    playerExportMode: "host-only" | "team-after-review";
+    phase: string;
+    activeStopId: string | null;
+    timerRunning: boolean;
+    timerStartedAt: string;
+    timerSecondsTotal: number;
     boardHidden: boolean;
     boardMode: string;
     boardsNeedShuffle: boolean;

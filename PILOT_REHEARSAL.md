@@ -13,19 +13,36 @@ raw IP addresses in this record.
 - Expected response time:
 - Cloudflare/log access owner:
 - Deployment and rollback owner:
+- Google Cloud/OAuth/Drive owner:
+- Domain/DNS and TLS owner:
 - School approval recorded for:
   - [ ] Activity and student notice
   - [ ] Nickname guidance
   - [ ] Photo policy, or photos confirmed disabled
   - [ ] Individual and room deletion
-  - [ ] Host exports and separately retained copies
+  - [ ] Host presentation/proof ZIP exports and separately retained copies
+  - [ ] Optional player same-team presentation exports and separately retained
+        copies, or player export confirmed disabled
 
 ## Release evidence
 
+- Package version:
 - Commit identifier:
+- Source timestamp:
+- Public-configuration fingerprint:
+- Worktree clean:
+- Generated release identifier:
+- CI run URL and result:
+- Release preflight time and result:
+- Deployment URL:
+- `/release.json` identity verified:
 - Active Worker version:
+- Active Worker deployment tag:
+- Baseline security headers verified:
 - Last-known-good Worker version:
 - Cloudflare plan:
+- Custom domain and TLS verified:
+- Google Drive API and OAuth web client verified:
 - Expected teachers, rooms, and students:
 - Test network:
 - Devices and browsers:
@@ -44,6 +61,18 @@ raw IP addresses in this record.
 - [ ] A screen reader announces joining, game status, dialogs, controls, and
   errors understandably.
 - [ ] Closing the lobby prevents an unintended late join.
+- [ ] Player presentation export is absent by default.
+- [ ] A host can authorize player presentation export before the hunt and
+  cannot newly enable it after the hunt starts.
+- [ ] An authorized player still cannot export until review and board reveal,
+  then can export only the same team's current board.
+- [ ] The player must confirm each separate copy. Full roster, cross-team data,
+  and proof ZIP export remain host-only.
+- [ ] On a shared Chromebook, Google code loads only after the export action,
+  account selection appears on every attempt, and no prior access token or
+  selected account is reused by the app.
+- [ ] Leaving, targeted deletion, room abandonment, and expiry messaging make
+  clear that a downloaded or Google Drive copy must be deleted separately.
 - [ ] One student's data and proof are deleted and can no longer be opened.
 - [ ] Leaving clears the student's identity and queued proof from the device.
 - [ ] Abandoning the room removes it.
@@ -53,6 +82,8 @@ raw IP addresses in this record.
 - [ ] Leaked room code: close the lobby, remove unexpected members, and replace
   the room if needed.
 - [ ] Unintended photo: delete the student's data and confirm the proof is gone.
+- [ ] Separately retained export: identify the host or authorized player copy
+  and follow the organization's deletion process; do not promise remote recall.
 - [ ] Deletion request: complete targeted deletion and record only the time and
   outcome.
 - [ ] Service failure: check health and logs, notify the pilot contact, and

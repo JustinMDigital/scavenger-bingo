@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Game, Group, RosterMember, Submission, Task } from "./gameService";
 import {
   buildPlayerSlidesExportModel,
+  requestGoogleDriveAccessToken,
   uploadPresentationToGoogleDrive,
 } from "./slidesExport";
 
@@ -63,6 +64,7 @@ const ROSTER: RosterMember[] = [
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("player Google Slides export model", () => {
@@ -169,6 +171,50 @@ describe("player Google Slides export model", () => {
 });
 
 describe("Google Drive presentation upload", () => {
+  it("asks for an account on every shared-device authorization", async () => {
+    const callbacks: Array<(response: {
+      access_token?: string;
+      expires_in?: number;
+    }) => void> = [];
+    const requestAccessToken = vi.fn();
+    const initTokenClient = vi.fn((config: {
+      callback: (response: { access_token?: string; expires_in?: number }) => void;
+    }) => {
+      callbacks.push(config.callback);
+      return { requestAccessToken };
+    });
+    vi.stubGlobal("window", {
+      google: {
+        accounts: {
+          oauth2: { initTokenClient },
+        },
+      },
+    });
+
+    const firstTokenPromise = requestGoogleDriveAccessToken(
+      "client.apps.googleusercontent.com",
+    );
+    await vi.waitFor(() => {
+      expect(requestAccessToken).toHaveBeenLastCalledWith({
+        prompt: "select_account",
+      });
+    });
+    callbacks[0]({ access_token: "first-student-token", expires_in: 3600 });
+    await expect(firstTokenPromise).resolves.toBe("first-student-token");
+
+    const secondTokenPromise = requestGoogleDriveAccessToken(
+      "client.apps.googleusercontent.com",
+    );
+    await vi.waitFor(() => {
+      expect(initTokenClient).toHaveBeenCalledTimes(2);
+      expect(requestAccessToken).toHaveBeenLastCalledWith({
+        prompt: "select_account",
+      });
+    });
+    callbacks[1]({ access_token: "second-student-token", expires_in: 3600 });
+    await expect(secondTokenPromise).resolves.toBe("second-student-token");
+  });
+
   it("uploads a PowerPoint as a native Google Slides file with narrow bearer access", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({

@@ -217,6 +217,7 @@ type LocalGamePatch = Partial<
     | "setupComplete"
     | "lobbyOpen"
     | "teamsLocked"
+    | "playerExportMode"
   >
 >;
 
@@ -378,6 +379,7 @@ export default function App() {
             ? savedPlayer.membershipId
             : undefined;
         const removedMembershipId = previousMembership?.id ?? savedMembershipId;
+        let queuedProofCleanupFailed = false;
 
         if (!nextState.membership && savedPlayer) {
           clearStoredPlayer();
@@ -397,11 +399,27 @@ export default function App() {
               removedMembershipId,
             );
           } catch (caughtError) {
+            queuedProofCleanupFailed = true;
             console.warn("Could not clear saved proof photos after removal.", caughtError);
           }
-        }
-        if (previousMembership || savedMembershipId) {
-          setToast("You were removed from the lobby and this device was cleared");
+
+          const entryPath = window.location.pathname.startsWith("/host")
+            ? "/host"
+            : "/";
+          clearStoredGameCode();
+          setGameCode("");
+          gameStateRef.current = null;
+          setGameState(null);
+          setSelectedTaskId("");
+          window.history.replaceState({}, "", entryPath);
+          setPath(entryPath);
+          setError("");
+          setToast(
+            queuedProofCleanupFailed
+              ? "You were removed. Saved queued photos could not be removed from this device."
+              : "You were removed from the lobby and this device was cleared",
+          );
+          return null;
         }
 
         gameStateRef.current = nextState;
@@ -412,10 +430,71 @@ export default function App() {
         setError("");
         return nextState;
       } catch (caughtError) {
+        const message = getErrorMessage(caughtError);
+        const activeState = gameStateRef.current;
+        const activeRoomEnded =
+          message === "No active game found for that code." &&
+          activeState?.game.code === requestedCode;
+
+        if (activeRoomEnded && activeState) {
+          const endedMembership =
+            activeState.membership?.role === "player"
+              ? activeState.membership
+              : null;
+          const savedPlayer = readStoredPlayer();
+          const endedMembershipId =
+            endedMembership?.id ??
+            (savedPlayer?.gameId === activeState.game.id
+              ? savedPlayer.membershipId
+              : undefined);
+          const entryPath = window.location.pathname.startsWith("/host")
+            ? "/host"
+            : "/";
+
+          if (endedMembershipId) {
+            setPendingProofs((proofs) =>
+              proofs.filter(
+                (proof) =>
+                  proof.gameId !== activeState.game.id ||
+                  proof.membershipId !== endedMembershipId,
+              ),
+            );
+          }
+          clearStoredPlayer();
+          setStoredPlayer(null);
+          clearStoredGameCode();
+          setGameCode("");
+          gameStateRef.current = null;
+          setGameState(null);
+          setSelectedTaskId("");
+          window.history.replaceState({}, "", entryPath);
+          setPath(entryPath);
+          setError("");
+          setToast("This room has ended. This device was cleared.");
+
+          if (endedMembershipId) {
+            try {
+              await deletePendingProofUploadsForMembership(
+                activeState.game.id,
+                endedMembershipId,
+              );
+            } catch (cleanupError) {
+              console.warn(
+                "Room ended, but saved proof photos could not be cleared.",
+                cleanupError,
+              );
+              setToast(
+                "Room ended. Saved queued photos could not be removed from this device.",
+              );
+            }
+          }
+          return null;
+        }
+
         if (!options?.silent) {
           setGameState(null);
         }
-        setError(getErrorMessage(caughtError));
+        setError(message);
         return null;
       } finally {
         if (!options?.silent) {
@@ -491,11 +570,23 @@ export default function App() {
       return undefined;
     }
 
-    return subscribeToGameChanges(loadedGameId, () => {
+    return subscribeToGameChanges(loadedGameId, async (revision) => {
       if (gameStateRef.current?.game.id !== loadedGameId) {
-        return;
+        return true;
       }
-      void refreshGameState(loadedGameCode, { silent: true });
+      const refreshedState = await refreshGameState(loadedGameCode, {
+        silent: true,
+      });
+      if (revision === undefined) {
+        return refreshedState !== null || gameStateRef.current === null;
+      }
+      if (refreshedState === null && gameStateRef.current === null) {
+        return true;
+      }
+      return (
+        typeof refreshedState?.revision === "number" &&
+        refreshedState.revision >= revision
+      );
     });
   }, [
     gameState?.game.code,
@@ -657,6 +748,7 @@ export default function App() {
       return false;
     }
 
+    const previousState = gameState;
     applyLocalGamePatch(patch);
     setError("");
 
@@ -668,13 +760,39 @@ export default function App() {
       }
       return true;
     } catch (caughtError) {
+      const message = getErrorMessage(caughtError);
       console.warn(
-        `Timer sync failed; keeping local host timer state: ${getErrorMessage(
-          caughtError,
-        )}`,
+        `Timer sync failed; restoring the saved room state: ${message}`,
         caughtError,
       );
-      setToast(options?.failureToast ?? "Timer changed locally");
+      const refreshedState = await refreshGameState(
+        previousState.game.code,
+        { silent: true },
+      );
+      const currentState = gameStateRef.current;
+
+      if (
+        !refreshedState &&
+        currentState?.game.id === previousState.game.id &&
+        (currentState.revision ?? 0) <= (previousState.revision ?? 0)
+      ) {
+        const rollbackPatch: LocalGamePatch = {};
+        const rollbackValues = rollbackPatch as Record<string, unknown>;
+        const previousGame = previousState.game as unknown as Record<
+          string,
+          unknown
+        >;
+
+        for (const key of Object.keys(patch)) {
+          rollbackValues[key] = previousGame[key];
+        }
+        applyLocalGamePatch(rollbackPatch);
+      }
+
+      if (gameStateRef.current?.game.id === previousState.game.id) {
+        setError(message);
+        setToast(options?.failureToast ?? "Change not saved. Room state restored.");
+      }
       return false;
     }
   }
@@ -800,39 +918,63 @@ export default function App() {
     }
 
     setIsLoading(true);
+    const leavingGameId = gameState.game.id;
+    const leavingMembership = membership;
+    let result: Awaited<ReturnType<typeof leaveGame>>;
+
     try {
-      const leavingMembership = membership;
-      const result = await leaveGame(gameState.game.id);
-      await deletePendingProofUploadsForMembership(
-        gameState.game.id,
-        leavingMembership.id,
-      );
-      setPendingProofs((current) =>
-        current.filter(
-          (proof) =>
-            proof.gameId !== gameState.game.id ||
-            proof.membershipId !== leavingMembership.id,
-        ),
-      );
-      clearStoredPlayer();
-      setStoredPlayer(null);
-      clearStoredGameCode();
-      setGameCode("");
-      setGameState(null);
-      setSelectedTaskId("");
-      window.history.pushState({}, "", "/");
-      setPath("/");
-      setToast(
-        result.deletedSubmissions > 0
-          ? `Left room and deleted ${result.deletedSubmissions} submissions`
-          : "Left room and cleared this device",
-      );
+      result = await leaveGame(leavingGameId);
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
       setToast("Could not leave the room");
-    } finally {
       setIsLoading(false);
+      return;
     }
+
+    setPendingProofs((current) =>
+      current.filter(
+        (proof) =>
+          proof.gameId !== leavingGameId ||
+          proof.membershipId !== leavingMembership.id,
+      ),
+    );
+
+    let queuedPhotoCleanupFailed = false;
+    try {
+      await deletePendingProofUploadsForMembership(
+        leavingGameId,
+        leavingMembership.id,
+      );
+    } catch (caughtError) {
+      queuedPhotoCleanupFailed = true;
+      console.warn(
+        "Left room, but saved proof photos could not be cleared.",
+        caughtError,
+      );
+    }
+
+    clearStoredPlayer();
+    setStoredPlayer(null);
+    clearStoredGameCode();
+    setGameCode("");
+    gameStateRef.current = null;
+    setGameState(null);
+    setSelectedTaskId("");
+    setError("");
+    try {
+      window.history.pushState({}, "", "/");
+    } catch (caughtError) {
+      console.warn("Left room, but the page address could not be reset.", caughtError);
+    }
+    setPath("/");
+    setToast(
+      queuedPhotoCleanupFailed
+        ? "Left room. Saved queued photos could not be removed from this device."
+        : result.deletedSubmissions > 0
+          ? `Left room and deleted ${result.deletedSubmissions} submissions`
+          : "Left room and cleared this device",
+    );
+    setIsLoading(false);
   }
 
   async function updateFailedPendingProof(
@@ -1227,7 +1369,7 @@ export default function App() {
             ? gameState.game.timerDurationMinutes * 60
             : gameState.game.timerSecondsTotal,
       },
-      { successToast: "Game started", failureToast: "Game started locally" },
+      { successToast: "Game started", failureToast: "Game start was not saved" },
     );
   }
 
@@ -1246,8 +1388,7 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      const resetResult = await resetGameProofs(gameState.game.id);
-      await updateGameTimer(gameState.game.id, {
+      const resetResult = await resetGameProofs(gameState.game.id, {
         activeStopId: null,
         phase: "play",
         timerRunning: false,
@@ -1563,7 +1704,7 @@ export default function App() {
     if (gameState.game.timerMode === "duration") {
       await syncGameTimer(
         { timerSecondsTotal: gameState.game.timerSecondsTotal + 300 },
-        { successToast: "Added 5 minutes", failureToast: "Added 5 minutes locally" },
+        { successToast: "Added 5 minutes", failureToast: "Extra time was not saved" },
       );
       return;
     }
@@ -1583,6 +1724,7 @@ export default function App() {
       gameState.game.phase === "play"
         ? { arriveTime: addMinutesToClockTime(targetStop.arriveTime, 5) }
         : { leaveTime: addMinutesToClockTime(targetStop.leaveTime, 5) };
+    const previousState = gameState;
 
     applyLocalStopPatch(targetStop.id, stopPatch);
     setError("");
@@ -1596,13 +1738,36 @@ export default function App() {
           : "Added 5 minutes",
       );
     } catch (caughtError) {
+      const message = getErrorMessage(caughtError);
       console.warn(
-        `Stop time sync failed; keeping local host time state: ${getErrorMessage(
-          caughtError,
-        )}`,
+        `Stop time sync failed; restoring the saved room state: ${message}`,
         caughtError,
       );
-      setToast("Added 5 minutes locally");
+      const refreshedState = await refreshGameState(
+        previousState.game.code,
+        { silent: true },
+      );
+      const currentState = gameStateRef.current;
+
+      if (
+        !refreshedState &&
+        currentState?.game.id === previousState.game.id &&
+        (currentState.revision ?? 0) <= (previousState.revision ?? 0)
+      ) {
+        const rollbackPatch: LocalStopPatch = {};
+        const rollbackValues = rollbackPatch as Record<string, unknown>;
+        const previousStop = targetStop as unknown as Record<string, unknown>;
+
+        for (const key of Object.keys(stopPatch)) {
+          rollbackValues[key] = previousStop[key];
+        }
+        applyLocalStopPatch(targetStop.id, rollbackPatch);
+      }
+
+      if (gameStateRef.current?.game.id === previousState.game.id) {
+        setError(message);
+        setToast("Time change was not saved");
+      }
     }
   }
 
@@ -1614,7 +1779,7 @@ export default function App() {
         : { timerRunning: true, timerStartedAt: new Date().toISOString() },
       {
         successToast: gameState.game.timerRunning ? "Timer paused" : "Timer resumed",
-        failureToast: "Timer changed locally",
+        failureToast: "Timer change was not saved",
       },
     );
   }
@@ -1636,7 +1801,7 @@ export default function App() {
         timerRunning: true,
         timerStartedAt: new Date().toISOString(),
       },
-      { failureToast: "Play phase changed locally" },
+      { failureToast: "Play phase was not saved" },
     );
     setExpandedStopId("");
   }
@@ -1658,7 +1823,7 @@ export default function App() {
         timerStartedAt: new Date().toISOString(),
         ...(gameState.game.boardHidden ? { boardHidden: false } : {}),
       },
-      { failureToast: "Stop phase changed locally" },
+      { failureToast: "Stop phase was not saved" },
     );
     setExpandedStopId(stop.id);
   }
@@ -1669,8 +1834,8 @@ export default function App() {
       {
         successToast: boardHidden ? "Board hidden" : "Board visible",
         failureToast: boardHidden
-          ? "Board hidden locally"
-          : "Board shown locally",
+          ? "Board hide was not saved"
+          : "Board reveal was not saved",
       },
     );
   }
@@ -1691,8 +1856,8 @@ export default function App() {
       {
         failureToast:
           phase === "review"
-            ? "Review mode set locally"
-            : "Schedule phase changed locally",
+            ? "Review mode was not saved"
+            : "Schedule phase was not saved",
       },
     );
   }
@@ -2361,9 +2526,9 @@ function GameCodeGate({
             the room code with friends, family, a class, or any other group.
           </p>
           <p>
-            After the host finishes the game, players can optionally create a
-            presentation in their own Google Drive. Google access is requested only
-            when a player chooses that export.
+            After the hunt, hosts can make a presentation for a team. A host can
+            also choose before play begins to let players make a separate copy of
+            only their own team’s finished board.
           </p>
         </div>
         <div className="landing-host-actions">
@@ -2437,17 +2602,18 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           <h2>Where data goes</h2>
           <p>
             Cloudflare runs the service and stores each temporary room and its proof
-            photos. When a player deliberately creates Google Slides, the presentation
-            is sent directly from that player’s browser to Google Drive. The presentation
-            can contain the game and team names, current team members, board progress,
-            prompts, proof photos, and the name of each photo’s submitter.
+            photos. When a host or authorized player deliberately creates Google Slides,
+            the presentation is sent directly from that person’s browser to Google Drive.
+            The presentation can contain the game and team names, current team members,
+            board progress, prompts, proof photos, and the name of each photo’s submitter.
           </p>
           <h2>Google Drive access</h2>
           <p>
-            Google authorization is requested only after a player selects{" "}
-            <strong>Create Google Slides</strong>. The game requests the narrow{" "}
+            Google is loaded and authorization is requested only after a person selects{" "}
+            <strong>Choose Google account and create</strong>. The person chooses an
+            account for every export. The game requests the narrow{" "}
             <code>drive.file</code> permission to create and access files made through
-            this export. It does not list or read the player’s other Drive files.
+            this export. It does not list or read the person’s other Drive files.
           </p>
           <p>
             The short-lived Google access token is kept only in the browser’s memory. It
@@ -2475,9 +2641,18 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           </p>
           <p>
             A presentation created in Google Drive is a separate copy. It remains in the
-            player’s Drive after the room expires or is deleted, until the player or
-            their Google Workspace administrator deletes it. Google handles that copy
-            under the player’s account and organization policies.
+            selected account after the room expires or is deleted, until the account
+            owner or their Google Workspace administrator deletes it. A downloaded
+            PowerPoint is also a separate copy on that device. Room deletion cannot
+            recall either kind of copy.
+          </p>
+          <h2>Who can make copies</h2>
+          <p>
+            Presentation exports are host-only by default. Before play begins, a host
+            may authorize players to export only their current team or personal board
+            after the hunt ends and the board is visible. Players must confirm each
+            separate copy. Full rosters, other teams, and the room’s proof ZIP remain
+            host-only.
           </p>
           <h2>Choices and deletion</h2>
           <p>
@@ -2531,10 +2706,12 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
           <h2>Temporary rooms and exported copies</h2>
           <p>
             Rooms, progress, and proof photos are temporary and normally expire within
-            seven days. The service is not an archive. A Google Slides presentation is a
-            separate copy in the player’s Google Drive and is governed by Google and
-            any policies that apply to the player’s account. The player is responsible
-            for sharing, retaining, or deleting that exported copy.
+            seven days. The service is not an archive. Presentations are host-only by
+            default. A host may authorize players before play begins to make a copy of
+            only their own team’s finished board after the hunt. Every Google Slides or
+            PowerPoint presentation is a separate copy governed by the destination
+            account or device. The person creating it is responsible for sharing,
+            retaining, and deleting it; deleting the room does not recall it.
           </p>
           <h2>Availability</h2>
           <p>
@@ -3107,6 +3284,13 @@ function JoinView({
           Your next screen shows your {game.boardSize} by {game.boardSize} card.
           {game.proofMode === "required" ? " Send photo proof as you go." : " Complete squares as you go."}
         </p>
+        {game.playerExportMode === "team-after-review" && (
+          <p className="join-export-notice">
+            This host allows players to make a separate presentation of their own
+            team’s board after the hunt. You will see exactly what is included and
+            confirm before creating a copy.
+          </p>
+        )}
       </div>
 
       <div className="join-steps" aria-label="How the game works">
@@ -3230,7 +3414,7 @@ function JoinView({
   );
 }
 
-function HostGate({
+export function HostGate({
   defaultDisplayName,
   defaultGameCode,
   error,
@@ -3252,7 +3436,27 @@ function HostGate({
     defaultGameCode || (isExistingRoom ? "" : generateRoomCode()),
   );
   const [pin, setPin] = useState(isExistingRoom ? "" : generateHostPin());
+  const [isPinVisible, setIsPinVisible] = useState(false);
+  const [pinCopyStatus, setPinCopyStatus] = useState("");
   const minimumPinLength = isExistingRoom ? 4 : 8;
+
+  async function handleCopyPin() {
+    if (!pin.trim()) {
+      return;
+    }
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard unavailable");
+      }
+
+      await navigator.clipboard.writeText(pin);
+      setPinCopyStatus("PIN copied.");
+    } catch {
+      setIsPinVisible(true);
+      setPinCopyStatus("Copy is unavailable here. The PIN is now visible so you can copy it.");
+    }
+  }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3341,17 +3545,21 @@ function HostGate({
             placeholder="Host"
           />
         </label>
-        <label className="field">
-          <span>PIN</span>
+        <div className="field host-pin-field">
+          <label htmlFor="host-pin">PIN</label>
           <input
+            id="host-pin"
             autoComplete="one-time-code"
             aria-describedby="host-pin-help"
             inputMode="numeric"
             minLength={minimumPinLength}
             maxLength={32}
-            type="password"
+            type={isPinVisible ? "text" : "password"}
             value={pin}
-            onChange={(event) => setPin(event.target.value)}
+            onChange={(event) => {
+              setPin(event.target.value);
+              setPinCopyStatus("");
+            }}
             placeholder={isExistingRoom ? "Existing PIN" : "8-digit PIN"}
           />
           <small id="host-pin-help">
@@ -3359,16 +3567,44 @@ function HostGate({
               ? "Use the PIN saved when this room was created."
               : "Save this 8-digit PIN—you’ll need it to host again."}
           </small>
-          {!isExistingRoom && (
+          <div className="host-pin-actions">
             <button
+              aria-controls="host-pin"
+              aria-pressed={isPinVisible}
               className="text-button"
               type="button"
-              onClick={() => setPin(generateHostPin())}
+              onClick={() => setIsPinVisible((visible) => !visible)}
             >
-              Generate another PIN
+              {isPinVisible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+              {isPinVisible ? "Hide PIN" : "Show PIN"}
             </button>
+            <button
+              className="text-button"
+              disabled={!pin.trim()}
+              type="button"
+              onClick={() => void handleCopyPin()}
+            >
+              Copy PIN
+            </button>
+            {!isExistingRoom && (
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => {
+                  setPin(generateHostPin());
+                  setPinCopyStatus("");
+                }}
+              >
+                Generate another PIN
+              </button>
+            )}
+          </div>
+          {pinCopyStatus && (
+            <small className="host-pin-copy-status" role="status">
+              {pinCopyStatus}
+            </small>
           )}
-        </label>
+        </div>
         <button
           className="join-submit"
           disabled={
@@ -3392,7 +3628,7 @@ function HostGate({
   );
 }
 
-function GroupView({
+export function GroupView({
   boardView,
   group,
   game,
@@ -3459,6 +3695,32 @@ function GroupView({
   const hasWon = hasTasks && (game.winCondition === "blackout"
     ? approvedCount === tasks.length
     : hasCompletedBingo(tasks, group.id, submissions, game.boardSize));
+  const taskPanelRef = useRef<HTMLElement>(null);
+  const taskTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const taskPanelWasOpenRef = useRef(false);
+  const taskPanelId = "player-task-panel";
+  const isTaskPanelOpen = Boolean(selectedTask && !isTaskCardDismissed);
+
+  useEffect(() => {
+    if (isTaskPanelOpen) {
+      taskPanelWasOpenRef.current = true;
+      taskPanelRef.current?.focus();
+      return;
+    }
+
+    if (taskPanelWasOpenRef.current) {
+      taskPanelWasOpenRef.current = false;
+      taskTriggerRef.current?.focus();
+    }
+  }, [isTaskPanelOpen, selectedTask?.id]);
+
+  function handleTaskPanelSelect(
+    taskId: string,
+    trigger: HTMLButtonElement,
+  ) {
+    taskTriggerRef.current = trigger;
+    onTaskSelect(taskId);
+  }
 
   return (
     <div className="view-stack group-view">
@@ -3531,19 +3793,21 @@ function GroupView({
                 <TaskBoard
                   boardSize={game.boardSize}
                   groupId={group.id}
-                  onTaskSelect={onTaskSelect}
+                  onTaskSelect={handleTaskPanelSelect}
                   pendingProofTaskIds={pendingProofTaskIds}
-                  selectedTaskId={selectedTask?.id ?? ""}
+                  selectedTaskId={isTaskPanelOpen ? selectedTask?.id ?? "" : ""}
                   submissions={submissions}
+                  taskPanelId={taskPanelId}
                   tasks={tasks}
                 />
               ) : (
                 <TaskList
                   groupId={group.id}
-                  onTaskSelect={onTaskSelect}
+                  onTaskSelect={handleTaskPanelSelect}
                   pendingProofTaskIds={pendingProofTaskIds}
-                  selectedTaskId={selectedTask?.id ?? ""}
+                  selectedTaskId={isTaskPanelOpen ? selectedTask?.id ?? "" : ""}
                   submissions={submissions}
+                  taskPanelId={taskPanelId}
                   tasks={tasks}
                 />
               )}
@@ -3558,8 +3822,13 @@ function GroupView({
         </section>
       )}
 
-      {!isBoardHidden && game.phase === "review" && hasTasks && (
+      {!isBoardHidden &&
+        game.setupComplete &&
+        game.phase === "review" &&
+        game.playerExportMode === "team-after-review" &&
+        hasTasks && (
         <PlayerSlidesExport
+          audience="player"
           game={game}
           group={group}
           roster={roster}
@@ -3579,6 +3848,8 @@ function GroupView({
           onRetryPendingProof={onRetryPendingProof}
           onSubmitProof={onSubmitProof}
           onCompleteTask={onCompleteTask}
+          panelId={taskPanelId}
+          panelRef={taskPanelRef}
           pendingProof={pendingProofsByTask.get(selectedTask.id)}
           submission={groupSubmissions.find(
             (submission) => submission.taskId === selectedTask.id,
@@ -4313,6 +4584,7 @@ function HostView({
               />
               {game.phase === "review" && (
                 <PlayerSlidesExport
+                  audience="host"
                   game={game}
                   group={selectedGroup}
                   roster={memberships}
@@ -4360,6 +4632,34 @@ function HostView({
               <label className="task-free-toggle"><input checked={game.lobbyOpen} type="checkbox" onChange={(event) => updateRoom({ lobbyOpen: event.target.checked })} />Allow new players to join</label>
               {game.playMode === "teams" && <label className="task-free-toggle"><input checked={game.teamsLocked} type="checkbox" onChange={(event) => updateRoom({ teamsLocked: event.target.checked })} />Assign new players to balanced teams</label>}
               {expiresAt && <small>Room expires {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(expiresAt))}</small>}
+            </div>
+            <div className="room-management-card">
+              <p className="label">Player presentations</p>
+              {game.playerExportMode === "team-after-review" ? (
+                <>
+                  <label className="task-free-toggle player-export-toggle">
+                    <input
+                      checked
+                      type="checkbox"
+                      onChange={(event) => {
+                        if (!event.target.checked) {
+                          updateRoom({ playerExportMode: "host-only" });
+                        }
+                      }}
+                    />
+                    Let players export their own team after the hunt
+                  </label>
+                  <small>
+                    You can turn this off now, but copies already created cannot be
+                    recalled or deleted from here.
+                  </small>
+                </>
+              ) : (
+                <small>
+                  Off. Player copies can be authorized only in Game setup before
+                  play begins. Hosts can still export a selected team in review.
+                </small>
+              )}
             </div>
           </div>
           <TeamManagementPanel
@@ -4600,12 +4900,15 @@ function GameSettingsPanel({
     winCondition: game.winCondition,
     proofMode: game.proofMode,
     approvalMode: game.approvalMode,
+    playerExportMode: game.playerExportMode ?? "host-only",
     timerMode: game.timerMode,
     timerDurationMinutes: game.timerDurationMinutes,
   });
   const [startTime, setStartTime] = useState("10:00 AM");
   const [isSaving, setIsSaving] = useState(false);
   const [photoApprovalAcknowledged, setPhotoApprovalAcknowledged] = useState(false);
+  const [playerExportApprovalAcknowledged, setPlayerExportApprovalAcknowledged] =
+    useState(false);
 
   useEffect(() => {
     setDraft({
@@ -4614,10 +4917,12 @@ function GameSettingsPanel({
       winCondition: game.winCondition,
       proofMode: game.proofMode,
       approvalMode: game.approvalMode,
+      playerExportMode: game.playerExportMode ?? "host-only",
       timerMode: game.timerMode,
       timerDurationMinutes: game.timerDurationMinutes,
     });
     setPhotoApprovalAcknowledged(false);
+    setPlayerExportApprovalAcknowledged(false);
   }, [game]);
 
   async function saveCustom() {
@@ -4680,10 +4985,49 @@ function GameSettingsPanel({
             unless specifically approved.
           </label>
         )}
+        <label className="task-free-toggle player-export-toggle">
+          <input
+            checked={draft.playerExportMode === "team-after-review"}
+            disabled={
+              game.setupComplete &&
+              draft.playerExportMode !== "team-after-review"
+            }
+            type="checkbox"
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              setDraft({
+                ...draft,
+                playerExportMode: enabled ? "team-after-review" : "host-only",
+              });
+              if (!enabled) setPlayerExportApprovalAcknowledged(false);
+            }}
+          />
+          Let players export their own team after the hunt
+        </label>
+        {game.setupComplete &&
+          draft.playerExportMode !== "team-after-review" && (
+          <small className="player-export-locked-note">
+            Player presentation sharing cannot be newly enabled after play begins.
+          </small>
+        )}
+        {draft.playerExportMode === "team-after-review" && (
+          <label className="task-free-toggle player-export-approval-toggle">
+            <input
+              checked={playerExportApprovalAcknowledged}
+              type="checkbox"
+              onChange={(event) =>
+                setPlayerExportApprovalAcknowledged(event.target.checked)
+              }
+            />
+            I have approval to let players make and keep separate copies of their
+            team’s names, board, proof photos, and photographer credits. I understand
+            deleting the room will not delete those copies.
+          </label>
+        )}
       </div>
 
       <div className="host-step-actions">
-        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim() || (draft.proofMode !== "none" && !photoApprovalAcknowledged)} type="button" onClick={saveCustom}>
+        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim() || (draft.proofMode !== "none" && !photoApprovalAcknowledged) || (draft.playerExportMode === "team-after-review" && !playerExportApprovalAcknowledged)} type="button" onClick={saveCustom}>
           {isSaving ? "Saving..." : "Save and continue"}
         </button>
       </div>
@@ -6014,14 +6358,16 @@ function TaskBoard({
   pendingProofTaskIds,
   selectedTaskId,
   submissions,
+  taskPanelId,
   tasks,
 }: {
   boardSize: BoardSize;
   groupId: string;
-  onTaskSelect: (taskId: string) => void;
+  onTaskSelect: (taskId: string, trigger: HTMLButtonElement) => void;
   pendingProofTaskIds: Set<string>;
   selectedTaskId: string;
   submissions: Submission[];
+  taskPanelId: string;
   tasks: Task[];
 }) {
   return (
@@ -6039,6 +6385,7 @@ function TaskBoard({
           isSelected={task.id === selectedTaskId}
           onTaskSelect={onTaskSelect}
           submissions={submissions}
+          taskPanelId={taskPanelId}
           task={task}
         />
       ))}
@@ -6052,19 +6399,22 @@ function TaskTile({
   isSelected,
   onTaskSelect,
   submissions,
+  taskPanelId,
   task,
 }: {
   groupId: string;
   hasPendingProof?: boolean;
   isSelected?: boolean;
-  onTaskSelect?: (taskId: string) => void;
+  onTaskSelect?: (taskId: string, trigger: HTMLButtonElement) => void;
   submissions: Submission[];
+  taskPanelId?: string;
   task: Task;
 }) {
   const status = getTaskStatus(task, groupId, submissions);
   const Icon = ICONS[task.icon] ?? Circle;
   const compactTitle = getBoardTileTitle(task);
   const showSavedState = status === "ready" && hasPendingProof;
+  const stateLabel = showSavedState ? "Saved to retry" : getStatusLabel(status);
 
   return (
     <button
@@ -6077,10 +6427,13 @@ function TaskTile({
         .filter(Boolean)
         .join(" ")}
       disabled={!onTaskSelect}
-      aria-label={`${task.title}. ${task.description}`}
+      aria-controls={taskPanelId && isSelected ? taskPanelId : undefined}
+      aria-expanded={taskPanelId ? Boolean(isSelected) : undefined}
+      aria-label={`${task.title}. ${task.description}. Status: ${stateLabel}`}
+      aria-pressed={typeof isSelected === "boolean" ? isSelected : undefined}
       title={task.title}
       type="button"
-      onClick={() => onTaskSelect?.(task.id)}
+      onClick={(event) => onTaskSelect?.(task.id, event.currentTarget)}
     >
       <Icon className="task-icon" aria-hidden="true" />
       <span className="task-title" aria-hidden="true">
@@ -6090,7 +6443,7 @@ function TaskTile({
         <span
           key={showSavedState ? "saved" : status}
           className="tile-state"
-          aria-label={showSavedState ? "Saved to retry" : getStatusLabel(status)}
+          aria-hidden="true"
         >
           {status === "approved" ? (
             <Check aria-hidden="true" />
@@ -6111,13 +6464,15 @@ function TaskList({
   pendingProofTaskIds,
   selectedTaskId,
   submissions,
+  taskPanelId,
   tasks,
 }: {
   groupId: string;
-  onTaskSelect: (taskId: string) => void;
+  onTaskSelect: (taskId: string, trigger: HTMLButtonElement) => void;
   pendingProofTaskIds: Set<string>;
   selectedTaskId: string;
   submissions: Submission[];
+  taskPanelId: string;
   tasks: Task[];
 }) {
   return (
@@ -6126,20 +6481,26 @@ function TaskList({
         const status = getTaskStatus(task, groupId, submissions);
         const Icon = ICONS[task.icon] ?? Circle;
         const showSavedState = status === "ready" && pendingProofTaskIds.has(task.id);
+        const isSelected = selectedTaskId === task.id;
+        const stateLabel = showSavedState ? "Saved to retry" : getStatusLabel(status);
 
         return (
           <button
             key={task.id}
             className={[
               "task-list-item",
-              selectedTaskId === task.id ? "is-selected" : "",
+              isSelected ? "is-selected" : "",
               status !== "ready" ? `is-${status}` : "",
               showSavedState ? "is-saved" : "",
             ]
               .filter(Boolean)
               .join(" ")}
+            aria-controls={isSelected ? taskPanelId : undefined}
+            aria-expanded={isSelected}
+            aria-label={`${task.title}. ${task.description}. Status: ${stateLabel}`}
+            aria-pressed={isSelected}
             type="button"
-            onClick={() => onTaskSelect(task.id)}
+            onClick={(event) => onTaskSelect(task.id, event.currentTarget)}
           >
             <span className="task-list-icon">
               <Icon aria-hidden="true" />
@@ -6167,6 +6528,8 @@ function SelectedTaskCard({
   onRetryPendingProof,
   onSubmitProof,
   onCompleteTask,
+  panelId,
+  panelRef,
   pendingProof,
   submission,
   task,
@@ -6180,6 +6543,8 @@ function SelectedTaskCard({
   onRetryPendingProof: (proofId: string) => void;
   onSubmitProof: (taskId: string, file: File) => void;
   onCompleteTask: (taskId: string) => void;
+  panelId: string;
+  panelRef: React.RefObject<HTMLElement>;
   pendingProof?: PendingProofUpload;
   submission?: Submission;
   task: Task;
@@ -6244,7 +6609,13 @@ function SelectedTaskCard({
   }
 
   return (
-    <section className="selected-task" aria-label="Current task">
+    <section
+      ref={panelRef}
+      aria-labelledby={`${panelId}-heading`}
+      className="selected-task"
+      id={panelId}
+      tabIndex={-1}
+    >
       <button
         aria-label="Close current task"
         className="selected-task-close"
@@ -6259,7 +6630,7 @@ function SelectedTaskCard({
         </div>
         <div>
           <p className="label">Current task</p>
-          <h2>{task.title}</h2>
+          <h2 id={`${panelId}-heading`}>{task.title}</h2>
           <p>{task.description}</p>
           <StatusBadge status={status} />
         </div>
@@ -6344,6 +6715,7 @@ function SelectedTaskCard({
         <div className={isReplacingProof ? "photo-actions is-replacing" : "photo-actions"}>
           <input
             ref={cameraInputRef}
+            aria-label={`${primaryPhotoLabel} for ${task.title}`}
             className="file-input-hidden"
             id={`${inputId}-camera`}
             type="file"
@@ -6353,6 +6725,7 @@ function SelectedTaskCard({
           />
           <input
             ref={uploadInputRef}
+            aria-label={`${secondaryPhotoLabel} for ${task.title}`}
             className="file-input-hidden"
             id={`${inputId}-upload`}
             type="file"
@@ -6456,7 +6829,7 @@ function TeamCard({
   );
 }
 
-function HostLiveBoard({
+export function HostLiveBoard({
   boardSize,
   group,
   onClose,
@@ -6515,7 +6888,12 @@ function HostLiveBoard({
             <p className="label">Live board</p>
             <h3>{group.name}</h3>
           </div>
-          <button className="host-board-close" type="button" onClick={onClose}>
+          <button
+            aria-label={`Close ${group.shortName} live board`}
+            className="host-board-close"
+            type="button"
+            onClick={onClose}
+          >
             <X aria-hidden="true" />
           </button>
         </div>

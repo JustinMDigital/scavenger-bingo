@@ -11,6 +11,7 @@ export type WinCondition = "blackout" | "bingo";
 export type BoardMode = "shared" | "randomized";
 export type ProofMode = "required" | "optional" | "none";
 export type ApprovalMode = "host" | "automatic";
+export type PlayerExportMode = "host-only" | "team-after-review";
 export type TimerMode = "none" | "duration" | "schedule";
 export type BoardSize = 3 | 4 | 5;
 
@@ -67,11 +68,40 @@ export type Game = {
   boardsNeedShuffle: boolean;
   proofMode: ProofMode;
   approvalMode: ApprovalMode;
+  playerExportMode?: PlayerExportMode;
   timerMode: TimerMode;
   timerDurationMinutes: number;
   lobbyOpen: boolean;
   teamsLocked: boolean;
 };
+
+export type GameTimerPatch = Partial<
+  Pick<
+    Game,
+    | "activeStopId"
+    | "phase"
+    | "timerRunning"
+    | "timerStartedAt"
+    | "timerSecondsTotal"
+    | "boardHidden"
+    | "name"
+    | "setupComplete"
+    | "lobbyOpen"
+    | "teamsLocked"
+  >
+>;
+
+export type GameResetPatch = Partial<
+  Pick<
+    Game,
+    | "activeStopId"
+    | "phase"
+    | "timerRunning"
+    | "timerStartedAt"
+    | "timerSecondsTotal"
+    | "boardHidden"
+  >
+>;
 
 export type Membership = {
   id: string;
@@ -106,6 +136,7 @@ export type Submission = {
 };
 
 export type GameState = {
+  revision?: number;
   game: Game;
   groups: Group[];
   tasks: Task[];
@@ -122,7 +153,11 @@ type ApiEnvelope<T> = { data: T };
 
 const gameCodeById = new Map<string, string>();
 const resourceCodeById = new Map<string, string>();
+const latestStateByGameId = new Map<string, GameState>();
+const latestRevisionByGameId = new Map<string, number>();
 const REALTIME_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+const REALTIME_REFRESH_COALESCE_MS = 25;
+const REALTIME_REFRESH_RETRY_DELAYS_MS = [250, 1000, 3000, 5000];
 
 export async function ensureAnonymousSession() {
   const response = await fetch("/api/health", { credentials: "same-origin" });
@@ -134,7 +169,8 @@ export async function loadGameState(gameCode = DEFAULT_GAME_CODE): Promise<GameS
   const code = normalizeGameCode(gameCode);
   if (!code) throw new Error("Game code is required.");
 
-  const state = await api<GameState>(`/api/games/${encodeURIComponent(code)}`);
+  const receivedState = await api<GameState>(`/api/games/${encodeURIComponent(code)}`);
+  const state = retainFreshestState(receivedState);
   rememberState(state);
   return state;
 }
@@ -269,6 +305,7 @@ export function configureGame({
     | "freeSpace"
     | "proofMode"
     | "approvalMode"
+    | "playerExportMode"
     | "timerMode"
     | "timerDurationMinutes"
     | "lobbyOpen"
@@ -346,11 +383,11 @@ export async function createProofDownloadUrl(
   return `/api/games/${encodeURIComponent(code)}/proofs/${encodeURIComponent(submissionId)}`;
 }
 
-export function resetGameProofs(gameId: string) {
+export function resetGameProofs(gameId: string, patch?: GameResetPatch) {
   return action<{ deletedImages: number; deletedSubmissions: number }>(
     requireCode(gameId),
     "resetGameProofs",
-    { gameId },
+    { gameId, ...(patch ? { patch } : {}) },
   );
 }
 
@@ -490,23 +527,17 @@ export function removeStop(stopId: string) {
 
 export function updateGameTimer(
   gameId: string,
-  patch: Partial<{
-    activeStopId: string | null;
-    phase: HuntPhase;
-    timerRunning: boolean;
-    timerStartedAt: string;
-    timerSecondsTotal: number;
-    boardHidden: boolean;
-    name: string;
-    setupComplete: boolean;
-    lobbyOpen: boolean;
-    teamsLocked: boolean;
-  }>,
+  patch: GameTimerPatch,
 ) {
   return action<Game>(requireCode(gameId), "updateGame", { gameId, patch });
 }
 
-export function subscribeToGameChanges(gameId: string, onChange: () => void) {
+export function subscribeToGameChanges(
+  gameId: string,
+  onChange: (
+    revision?: number,
+  ) => boolean | void | Promise<boolean | void>,
+) {
   const code = gameCodeById.get(gameId);
   if (!code || typeof window === "undefined" || !("WebSocket" in window)) {
     return () => undefined;
@@ -514,8 +545,115 @@ export function subscribeToGameChanges(gameId: string, onChange: () => void) {
 
   let socket: WebSocket | null = null;
   let reconnectTimer: number | undefined;
+  let refreshTimer: number | undefined;
   let reconnectAttempt = 0;
+  let refreshRetryAttempt = 0;
+  let refreshInFlight = false;
   let stopped = false;
+  let acknowledgedRevision = latestRevisionByGameId.get(gameId) ?? -1;
+  let queuedRevision: number | undefined;
+  let queuedLegacyRefresh = false;
+
+  const armRefresh = (delay = REALTIME_REFRESH_COALESCE_MS) => {
+    if (stopped || refreshInFlight || refreshTimer !== undefined) return;
+    refreshTimer = window.setTimeout(() => {
+      void runRefresh();
+    }, delay);
+  };
+
+  const runRefresh = async () => {
+    refreshTimer = undefined;
+    if (stopped || refreshInFlight) return;
+
+    const revisionToRefresh = queuedRevision;
+    const shouldRefreshLegacy = queuedLegacyRefresh;
+    queuedRevision = undefined;
+    queuedLegacyRefresh = false;
+    if (revisionToRefresh === undefined && !shouldRefreshLegacy) return;
+
+    refreshInFlight = true;
+    let callbackAcknowledged = false;
+    try {
+      callbackAcknowledged = (await onChange(revisionToRefresh)) !== false;
+    } catch {
+      callbackAcknowledged = false;
+    } finally {
+      refreshInFlight = false;
+    }
+    if (stopped) return;
+
+    if (revisionToRefresh !== undefined) {
+      const latestLoadedRevision = latestRevisionByGameId.get(gameId) ?? -1;
+      if (
+        callbackAcknowledged ||
+        latestLoadedRevision >= revisionToRefresh
+      ) {
+        acknowledgedRevision = Math.max(
+          acknowledgedRevision,
+          latestLoadedRevision,
+          revisionToRefresh,
+        );
+        refreshRetryAttempt = 0;
+        if (
+          queuedRevision !== undefined &&
+          queuedRevision <= acknowledgedRevision
+        ) {
+          queuedRevision = undefined;
+        }
+      } else {
+        queuedRevision = Math.max(
+          queuedRevision ?? -1,
+          revisionToRefresh,
+        );
+        const delay =
+          REALTIME_REFRESH_RETRY_DELAYS_MS[
+            Math.min(
+              refreshRetryAttempt,
+              REALTIME_REFRESH_RETRY_DELAYS_MS.length - 1,
+            )
+          ];
+        refreshRetryAttempt += 1;
+        armRefresh(delay);
+        return;
+      }
+    } else if (callbackAcknowledged) {
+      refreshRetryAttempt = 0;
+    } else {
+      queuedLegacyRefresh = true;
+      const delay =
+        REALTIME_REFRESH_RETRY_DELAYS_MS[
+          Math.min(
+            refreshRetryAttempt,
+            REALTIME_REFRESH_RETRY_DELAYS_MS.length - 1,
+          )
+        ];
+      refreshRetryAttempt += 1;
+      armRefresh(delay);
+      return;
+    }
+
+    if (queuedRevision !== undefined || queuedLegacyRefresh) {
+      armRefresh();
+    }
+  };
+
+  const scheduleRefresh = (revision?: number) => {
+    if (stopped) return;
+
+    if (revision !== undefined) {
+      const latestLoadedRevision = latestRevisionByGameId.get(gameId) ?? -1;
+      acknowledgedRevision = Math.max(
+        acknowledgedRevision,
+        latestLoadedRevision,
+      );
+      if (revision <= acknowledgedRevision) return;
+      queuedRevision = Math.max(queuedRevision ?? -1, revision);
+    } else {
+      queuedLegacyRefresh = true;
+    }
+
+    armRefresh();
+  };
 
   const connect = () => {
     if (stopped || document.visibilityState === "hidden" || !navigator.onLine) return;
@@ -525,10 +663,11 @@ export function subscribeToGameChanges(gameId: string, onChange: () => void) {
     );
     socket.addEventListener("open", () => {
       reconnectAttempt = 0;
-      onChange();
+      scheduleRefresh();
     });
     socket.addEventListener("message", (event) => {
-      if (event.data !== "pong") onChange();
+      if (event.data === "pong") return;
+      scheduleRefresh(readRoomChangeRevision(event.data));
     });
     socket.addEventListener("close", () => {
       socket = null;
@@ -560,10 +699,30 @@ export function subscribeToGameChanges(gameId: string, onChange: () => void) {
   return () => {
     stopped = true;
     if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     window.removeEventListener("online", resume);
     document.removeEventListener("visibilitychange", resume);
     socket?.close(1000, "View closed");
   };
+}
+
+function readRoomChangeRevision(value: unknown) {
+  if (typeof value !== "string") return undefined;
+
+  try {
+    const message = JSON.parse(value) as {
+      type?: unknown;
+      revision?: unknown;
+    };
+    const revision = Number(message.revision);
+    return message.type === "room-change" &&
+        Number.isSafeInteger(revision) &&
+        revision >= 0
+      ? revision
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function action<T>(
@@ -619,6 +778,33 @@ function rememberState(state: GameState) {
   ]) {
     resourceCodeById.set(item.id, code);
   }
+}
+
+function retainFreshestState(state: GameState) {
+  const revision = normalizeRevision(state.revision);
+  const latestState = latestStateByGameId.get(state.game.id);
+  const latestRevision = latestState
+    ? normalizeRevision(latestState.revision)
+    : undefined;
+
+  if (
+    revision !== undefined &&
+    latestRevision !== undefined &&
+    revision < latestRevision
+  ) {
+    return latestState!;
+  }
+
+  latestStateByGameId.set(state.game.id, state);
+  if (revision !== undefined) {
+    latestRevisionByGameId.set(state.game.id, revision);
+  }
+  return state;
+}
+
+function normalizeRevision(value: unknown) {
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : undefined;
 }
 
 function requireCode(resourceId: string) {

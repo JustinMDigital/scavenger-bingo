@@ -2,7 +2,10 @@
 
 ## Service boundaries
 
-- One Cloudflare Worker serves static assets, the room API, and live updates.
+- One Cloudflare Worker with Static Assets serves the website, room API, and
+  live updates. Durable Objects hold the temporary room state and proof bytes.
+- This is the sole current runtime. There is no active Vercel deployment or
+  separate production database.
 - `GameRoom` stores one temporary room; `RoomRegistry` controls public creation.
 - Rooms and server proof photos expire after seven days and have no backup.
 - Deployment, custom-domain work, account changes, and production deletion are
@@ -88,8 +91,9 @@ classroom load test before broad distribution.
 
 1. Use **Delete data** for the submitting student or reset all proofs.
 2. Confirm the proof URL returns not found.
-3. If a host exported a copy, remove that separate local/Google Drive copy under
-   school policy; room deletion cannot recall exports.
+3. Ask any host or authorized player who exported that team presentation, plus
+   any host who downloaded a proof ZIP, to remove the separate local/Google
+   Drive copy under school policy. Room deletion cannot recall exports.
 
 ### Service disruption
 
@@ -117,18 +121,38 @@ classroom load test before broad distribution.
   targeted delete, and abandon.
 - Confirm the public privacy/support pages and contact channel from an
   unauthenticated browser.
+- Compare `/release.json` with the approved version, commit, source timestamp,
+  public-configuration fingerprint, release identifier, and clean-source status.
+  Record the active Cloudflare deployment identifier and matching deployment tag
+  beside it.
 
 ## Release record and rollback
 
 Before each production release:
 
-1. Run the complete release checklist and record the commit identifier.
-2. Use `npx wrangler deployments list` or the Cloudflare dashboard to record
+1. Start from the exact intended release revision with a clean worktree. Run
+   `npm ci`, then `npm run release:preflight`. The preflight runs the complete
+   dependency-lockfile audit, automated tests, production build,
+   release-metadata check, multi-user browser journeys, and a Cloudflare
+   packaging dry run; it does not deploy. The
+   `--allow-dirty` option is for local diagnosis only and is never release
+   approval.
+2. Record the source commit, package version, public-configuration fingerprint,
+   generated release identifier, CI run URL/result, and preflight time in
+   `PILOT_REHEARSAL.md`.
+3. Use `npx wrangler deployments list` or the Cloudflare dashboard to record
    the currently active, last-known-good Worker version in
    `PILOT_REHEARSAL.md`.
-3. Deploy only with an explicitly approved release owner.
-4. Complete the live health and classroom smoke checks before declaring the
-   new version good.
+4. Deploy only with an explicitly approved release owner. `npm run deploy`
+   requires the approved account in `CLOUDFLARE_ACCOUNT_ID`, repeats the
+   preflight, rejects any source/configuration drift, publishes the exact
+   verified build, and tags it with the generated release identifier.
+5. Run `npm run verify:deployment -- https://YOUR-DOMAIN` to check health,
+   build identity and public configuration, the Cloudflare deployment tag,
+   baseline security headers, public pages, browser errors, and unknown-route
+   behavior without creating or changing room data.
+6. Complete the separate live create/join, deletion, export-policy, and
+   classroom smoke checks before declaring the new version good.
 
 If the new version causes an incident, select the recorded version in
 Cloudflare's deployment history or run
@@ -145,4 +169,9 @@ Broad self-service school release requires named owners for:
   expectation.
 - Cloudflare account, billing/plan limits, logs, and incident access.
 - Deployment approval and rollback.
+- Google Cloud project, OAuth consent/client, Drive API, approved origins, and
+  ongoing access review.
 - School/privacy review and updates to the public notice.
+- Custom domain/DNS and TLS.
+- Physical-device, screen-reader, shared-Chromebook, and school-network
+  rehearsal evidence.

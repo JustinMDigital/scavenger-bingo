@@ -3,6 +3,9 @@
   "name": "scavenger-bingo",
   "main": "worker/index.ts",
   "compatibility_date": "2026-07-19",
+  "version_metadata": {
+    "binding": "CF_VERSION"
+  },
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",

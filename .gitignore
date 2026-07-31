@@ -4,6 +4,8 @@ dist/
 .impeccable/
 output/
 coverage/
+playwright-report/
+test-results/
 
 .DS_Store
 *.tsbuildinfo
@@ -12,5 +14,7 @@ coverage/
 .env.*
 !.env.example
 *.local
+.dev.vars
+.dev.vars.*
 .vercel/
 .wrangler/

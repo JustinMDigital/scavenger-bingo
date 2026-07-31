@@ -12,7 +12,6 @@ import {
   buildPlayerSlidesExportModel,
   createPlayerSlidesDeck,
   downloadPresentation,
-  primeGoogleIdentity,
   requestGoogleDriveAccessToken,
   uploadPresentationToGoogleDrive,
 } from "./slidesExport";
@@ -23,12 +22,14 @@ import type {
 } from "./slidesExport";
 
 export function PlayerSlidesExport({
+  audience = "player",
   game,
   group,
   roster,
   submissions,
   tasks,
 }: {
+  audience?: "host" | "player";
   game: Game;
   group: Group;
   roster: RosterMember[];
@@ -41,11 +42,14 @@ export function PlayerSlidesExport({
     useState<GoogleDrivePresentation | null>(null);
   const [downloadedFileName, setDownloadedFileName] = useState("");
   const [error, setError] = useState("");
-  const [isGoogleReady, setIsGoogleReady] = useState(false);
-  const [isWorking, setIsWorking] = useState(false);
+  const [copyAcknowledged, setCopyAcknowledged] = useState(false);
+  const [workingAction, setWorkingAction] = useState<
+    "google-slides" | "download" | null
+  >(null);
   const [progress, setProgress] = useState<SlidesExportProgress | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? "";
+  const isWorking = workingAction !== null;
   const model = useMemo(
     () =>
       buildPlayerSlidesExportModel({
@@ -64,31 +68,10 @@ export function PlayerSlidesExport({
     setDownloadedFileName("");
     setError("");
     setWarnings([]);
+    setCopyAcknowledged(false);
   }, [model]);
-
-  useEffect(() => {
-    let active = true;
-
-    if (!googleClientId) {
-      setIsGoogleReady(false);
-      return undefined;
-    }
-
-    void primeGoogleIdentity()
-      .then(() => {
-        if (active) setIsGoogleReady(true);
-      })
-      .catch((caughtError) => {
-        if (active) {
-          setIsGoogleReady(false);
-          setError(getErrorMessage(caughtError));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [googleClientId]);
+  const requiresAcknowledgment = audience === "player";
+  const canExport = !requiresAcknowledgment || copyAcknowledged;
 
   async function prepareDeck() {
     if (artifact) {
@@ -111,7 +94,7 @@ export function PlayerSlidesExport({
     setCreatedPresentation(null);
     setDownloadedFileName("");
     setError("");
-    setIsWorking(true);
+    setWorkingAction("google-slides");
     setProgress({ label: "Connecting to Google Drive" });
 
     try {
@@ -133,7 +116,7 @@ export function PlayerSlidesExport({
       setError(getErrorMessage(caughtError));
       setProgress(null);
     } finally {
-      setIsWorking(false);
+      setWorkingAction(null);
     }
   }
 
@@ -141,7 +124,7 @@ export function PlayerSlidesExport({
     if (isWorking) return;
 
     setError("");
-    setIsWorking(true);
+    setWorkingAction("download");
 
     try {
       const nextArtifact = await prepareDeck();
@@ -152,13 +135,17 @@ export function PlayerSlidesExport({
       setError(getErrorMessage(caughtError));
       setProgress(null);
     } finally {
-      setIsWorking(false);
+      setWorkingAction(null);
     }
   }
 
   return (
     <>
-      <section className="player-slides-export" aria-labelledby="slides-export-title">
+      <section
+        aria-busy={isWorking}
+        aria-labelledby="slides-export-title"
+        className="player-slides-export"
+      >
         <div className="player-slides-export-icon">
           <FileSliders aria-hidden="true" />
         </div>
@@ -170,10 +157,23 @@ export function PlayerSlidesExport({
             credits, and the items that still need work.
           </p>
           <p className="slides-export-privacy-note">
-            Google access is requested only when you create the presentation. The
-            exported copy stays in your Google Drive until you delete it.{" "}
+            Google loads only after you choose the Google action, and you choose an
+            account every time. The exported copy stays in Google Drive or Downloads
+            until its owner deletes it.{" "}
             <a href="/privacy">Privacy details</a>
           </p>
+          {requiresAcknowledgment && (
+            <label className="task-free-toggle slides-export-copy-confirmation">
+              <input
+                checked={copyAcknowledged}
+                type="checkbox"
+                onChange={(event) => setCopyAcknowledged(event.target.checked)}
+              />
+              I understand this creates a separate copy with my team’s names and
+              photos in the Google account or Downloads on this device. It will not
+              be deleted when I leave or when the room expires.
+            </label>
+          )}
           <div className="player-slides-export-summary" aria-label="Export summary">
             <span>
               <strong>{model.submittedCount}</strong> submitted
@@ -243,25 +243,33 @@ export function PlayerSlidesExport({
           <div className="player-slides-export-actions">
             <button
               className="primary-action slides-export-primary"
-              disabled={!googleClientId || !isGoogleReady || isWorking}
+              disabled={!googleClientId || !canExport || isWorking}
               type="button"
               onClick={() => void handleCreateGoogleSlides()}
             >
-              {isWorking ? (
+              {workingAction === "google-slides" ? (
                 <LoaderCircle className="is-spinning" aria-hidden="true" />
               ) : (
                 <FileSliders aria-hidden="true" />
               )}
-              {isWorking ? "Preparing..." : "Create Google Slides"}
+              {workingAction === "google-slides"
+                ? "Preparing Google Slides..."
+                : "Choose Google account and create"}
             </button>
             <button
               className="secondary-action"
-              disabled={isWorking}
+              disabled={!canExport || isWorking}
               type="button"
               onClick={() => void handleDownloadPresentation()}
             >
-              <Download aria-hidden="true" />
-              Download presentation
+              {workingAction === "download" ? (
+                <LoaderCircle className="is-spinning" aria-hidden="true" />
+              ) : (
+                <Download aria-hidden="true" />
+              )}
+              {workingAction === "download"
+                ? "Preparing download..."
+                : "Download presentation"}
             </button>
           </div>
         </div>

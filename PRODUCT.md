@@ -92,8 +92,19 @@ Blank rooms and school-oriented templates start without photo uploads. Turning
 photos on is a deliberate choice that requires participant approval plus any
 additional approval that applies to the group. Players can leave and clear
 shared-device data; hosts can delete one player's membership, submissions, and
-proofs without deleting the whole room. Full rosters and permanent exports are
-host-only.
+proofs without deleting the whole room.
+
+Presentation export is host-only by default. Before a hunt starts, the host may
+authorize players to export only their same-team, current-board presentation
+after the hunt reaches review and the board is revealed. The player must confirm
+each export because the download or Google Drive presentation becomes a
+separate copy that room deletion and expiry cannot recall. Full rosters,
+cross-team data, and proof ZIP exports remain host-only.
+
+Cloudflare Workers Static Assets and Durable Objects are the sole current public
+runtime. There is no active Vercel path. Google Drive export is a browser-to-
+Google action that begins only when the user chooses it; Google account
+selection happens on every attempt and the app does not cache the access token.
 
 ## Flexible Game Rules
 

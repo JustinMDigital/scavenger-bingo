@@ -115,7 +115,6 @@ declare global {
 }
 
 let googleIdentityPromise: Promise<void> | null = null;
-let cachedGoogleToken: { accessToken: string; expiresAt: number } | null = null;
 
 export function buildPlayerSlidesExportModel({
   exportedAt = new Date(),
@@ -239,10 +238,6 @@ export async function requestGoogleDriveAccessToken(clientId: string) {
     throw new Error("Google Slides export has not been configured.");
   }
 
-  if (cachedGoogleToken && cachedGoogleToken.expiresAt > Date.now() + 60_000) {
-    return cachedGoogleToken.accessToken;
-  }
-
   await primeGoogleIdentity();
   const oauth2 = window.google?.accounts?.oauth2;
 
@@ -273,11 +268,6 @@ export async function requestGoogleDriveAccessToken(clientId: string) {
         }
 
         settled = true;
-        const expiresInSeconds = Math.max(60, response.expires_in ?? 3600);
-        cachedGoogleToken = {
-          accessToken: response.access_token,
-          expiresAt: Date.now() + expiresInSeconds * 1000,
-        };
         resolve(response.access_token);
       },
       error_callback: (error) => {
@@ -289,12 +279,16 @@ export async function requestGoogleDriveAccessToken(clientId: string) {
       },
     });
 
-    client.requestAccessToken({ prompt: "" });
+    // This app is often used on shared classroom and event devices. Always ask
+    // which Google account should receive the separate presentation instead of
+    // silently reusing a prior student's authorization.
+    client.requestAccessToken({ prompt: "select_account" });
   });
 }
 
 export function clearCachedGoogleDriveToken() {
-  cachedGoogleToken = null;
+  // Kept as a no-op for callers built against the earlier helper. Access tokens
+  // are intentionally never cached by the app.
 }
 
 export async function createPlayerSlidesDeck({

@@ -3,16 +3,25 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "vite",
+    "dev:e2e": "vite --host 127.0.0.1 --port 4175 --strictPort",
     "build": "tsc -b && tsc -p tsconfig.worker.json && vite build",
     "preview": "vite preview",
-    "test": "npm run test:core && npm run test:ui",
+    "test": "npm run test:core && npm run test:release-hardening && npm run test:ui",
     "test:core": "vitest run --config vitest.config.ts",
+    "test:release-hardening": "node --test scripts/release-hardening.test.mjs",
     "test:ui": "vitest run --config vitest.ui.config.ts",
+    "test:e2e": "playwright test",
     "check:release-contact": "node scripts/verify-release-contact.mjs",
+    "check:release-metadata": "node scripts/verify-build-metadata.mjs",
+    "release:preflight": "node scripts/release-preflight.mjs",
+    "verify:deployment": "node scripts/verify-deployment.mjs",
     "check": "npm run test && npm run build",
-    "deploy": "npm run check && npm run check:release-contact && wrangler deploy",
+    "deploy": "node scripts/deploy-release.mjs",
     "cf:types": "wrangler types"
   },
   "dependencies": {
@@ -27,7 +36,9 @@
     "@cloudflare/vite-plugin": "1.47.0",
     "@cloudflare/vitest-pool-workers": "0.18.8",
     "@cloudflare/workers-types": "5.20260726.1",
+    "@playwright/test": "^1.62.0",
     "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.13.3",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

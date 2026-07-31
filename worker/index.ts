@@ -42,6 +42,8 @@ const JOIN_ATTEMPTS_KEY_PREFIX = "join-attempts:";
 const MAX_STOPS_PER_ROOM = 20;
 const MAX_PROOF_BYTES = 500 * 1024;
 const MAX_ROOM_PROOF_BYTES = 25 * 1024 * 1024;
+const MAX_PROOF_UPLOADS_IN_FLIGHT_PER_MEMBERSHIP = 2;
+const MAX_PROOF_UPLOADS_IN_FLIGHT_PER_ROOM = 8;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_IMAGE_DIMENSION = 8192;
 const MAX_IMAGE_PIXELS = 20_000_000;
@@ -54,9 +56,18 @@ const HOST_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const HOST_ATTEMPTS_KEY_PREFIX = "host-attempts:";
 const ROOM_KEY = "room";
 const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
+const RESET_GAME_PATCH_KEYS = new Set([
+  "activeStopId",
+  "phase",
+  "timerRunning",
+  "timerStartedAt",
+  "timerSecondsTotal",
+  "boardHidden",
+]);
 
 export interface Env {
   ASSETS: Fetcher;
+  CF_VERSION?: WorkerVersionMetadata;
   GAME_ROOMS: DurableObjectNamespace<GameRoom>;
   ROOM_REGISTRY: DurableObjectNamespace<RoomRegistry>;
 }
@@ -79,12 +90,43 @@ type ActionRequest = {
   payload?: Record<string, unknown>;
 };
 
+type HostRequest = {
+  pin?: string;
+  displayName?: string;
+  templateId?: string;
+};
+
+type JoinRequest = {
+  gameId?: string;
+  groupId?: string;
+  displayName?: string;
+};
+
+type ProofUpload = {
+  bytes: ArrayBuffer;
+  contentType: string;
+  gameId: string;
+  groupId: string;
+  imageName: string;
+  taskId: string;
+};
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {
-      return json({ ok: true, backend: "cloudflare-durable-objects" });
+      return json({
+        ok: true,
+        backend: "cloudflare-durable-objects",
+        deployment: env.CF_VERSION
+          ? {
+              id: env.CF_VERSION.id,
+              tag: env.CF_VERSION.tag,
+              timestamp: env.CF_VERSION.timestamp,
+            }
+          : null,
+      });
     }
 
     if (!url.pathname.startsWith("/api/")) {
@@ -312,6 +354,9 @@ export class RoomRegistry extends DurableObject<Env> {
 export class GameRoom extends DurableObject<Env> {
   private room: StoredRoom | null = null;
   private mutationAttempts = new Map<string, number[]>();
+  private mutationQueue: Promise<void> = Promise.resolve();
+  private proofUploadsInFlight = new Map<string, number>();
+  private proofUploadsInFlightTotal = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -349,19 +394,36 @@ export class GameRoom extends DurableObject<Env> {
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/host")) {
-        return await this.claimHost(request, sessionId, code);
+        const body = await readJson<HostRequest>(request);
+        return await this.runMutation(() =>
+          this.claimHost(request, sessionId, code, body)
+        );
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/join")) {
-        return await this.joinGame(request, sessionId);
+        const body = await readJson<JoinRequest>(request);
+        return await this.runMutation(() =>
+          this.joinGame(request, sessionId, body)
+        );
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/proofs")) {
-        return await this.saveProof(request, sessionId, publicOrigin);
+        const releaseUpload = this.reserveProofUpload(request, sessionId);
+        try {
+          const upload = await readProofUpload(request);
+          return await this.runMutation(() =>
+            this.saveProof(upload, sessionId, publicOrigin)
+          );
+        } finally {
+          releaseUpload();
+        }
       }
 
       if (request.method === "POST" && url.pathname.endsWith("/actions")) {
-        return await this.performAction(request, sessionId, publicOrigin);
+        const body = await readJson<ActionRequest>(request);
+        return await this.runMutation(() =>
+          this.performAction(body, sessionId, publicOrigin)
+        );
       }
 
       return json({ error: "Room route not found." }, 404);
@@ -382,18 +444,48 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   async alarm() {
+    await this.runMutation(() => this.expireRoom());
+  }
+
+  private async expireRoom() {
     const code = this.room?.game.code;
 
+    await this.ctx.storage.deleteAll();
+    this.room = null;
+
     if (code) {
-      await this.releaseRegistry(code);
+      try {
+        await this.releaseRegistry(code);
+      } catch {
+        warnOperationalEvent("room_expiry_registry_release_failed", {
+          localCleanupContinued: true,
+        });
+      }
     }
 
     this.broadcast("expired");
     for (const socket of this.ctx.getWebSockets()) {
-      socket.close(1000, "Room expired");
+      try {
+        socket.close(1000, "Room expired");
+      } catch {
+        // The room data still needs to be deleted if a stale socket cannot close.
+      }
     }
-    await this.ctx.storage.deleteAll();
-    this.room = null;
+  }
+
+  private async runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previousMutation = this.mutationQueue;
+    let releaseMutation: () => void = () => undefined;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+
+    await previousMutation;
+    try {
+      return await operation();
+    } finally {
+      releaseMutation();
+    }
   }
 
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
@@ -406,12 +498,12 @@ export class GameRoom extends DurableObject<Env> {
     socket.close(code, reason);
   }
 
-  private async claimHost(request: Request, sessionId: string, code: string) {
-    const body = await readJson<{
-      pin?: string;
-      displayName?: string;
-      templateId?: string;
-    }>(request);
+  private async claimHost(
+    request: Request,
+    sessionId: string,
+    code: string,
+    body: HostRequest,
+  ) {
     const pin = body.pin?.trim() ?? "";
     const displayName = cleanName(body.displayName, "Host name");
     const isCreatingRoom = !this.room;
@@ -420,6 +512,7 @@ export class GameRoom extends DurableObject<Env> {
     const networkRateKey =
       `network:${request.headers.get("x-scavenger-network") || "unknown"}`;
     const minimumPinLength = isCreatingRoom ? 8 : 4;
+    let room: StoredRoom;
 
     if (pin.length < minimumPinLength || pin.length > 32) {
       throw new HttpError(
@@ -447,8 +540,8 @@ export class GameRoom extends DurableObject<Env> {
         normalizePlayerOwnership(newRoom);
         regenerateBoards(newRoom);
       }
-      this.room = newRoom;
-      await this.ctx.storage.setAlarm(this.room.expiresAt);
+      room = newRoom;
+      await this.ctx.storage.setAlarm(room.expiresAt);
     } else {
       if (body.templateId !== undefined) {
         throw new HttpError(
@@ -473,9 +566,9 @@ export class GameRoom extends DurableObject<Env> {
         this.ctx.storage.delete(`${HOST_ATTEMPTS_KEY_PREFIX}${browserRateKey}`),
         this.ctx.storage.delete(`${HOST_ATTEMPTS_KEY_PREFIX}${networkRateKey}`),
       ]);
+      room = structuredClone(existingRoom);
     }
 
-    const room = this.requireRoom();
     const existing = room.memberships.find((item) => item.userId === sessionId);
     if (!existing && room.memberships.length >= MAX_MEMBERS_PER_ROOM) {
       throw new HttpError(409, "This room has reached its member limit.");
@@ -503,7 +596,7 @@ export class GameRoom extends DurableObject<Env> {
       ...room.memberships.filter((item) => item.userId !== sessionId),
       membership,
     ];
-    await this.saveRoom();
+    await this.saveRoom(room);
     if (isCreatingRoom) {
       try {
         await this.confirmRegistry(code, sessionId, room.expiresAt);
@@ -518,13 +611,12 @@ export class GameRoom extends DurableObject<Env> {
     return json({ data: publicMembership(membership) });
   }
 
-  private async joinGame(request: Request, sessionId: string) {
-    const room = this.requireRoom();
-    const body = await readJson<{
-      gameId?: string;
-      groupId?: string;
-      displayName?: string;
-    }>(request);
+  private async joinGame(
+    request: Request,
+    sessionId: string,
+    body: JoinRequest,
+  ) {
+    const room = structuredClone(this.requireRoom());
     requireGameId(room, body.gameId);
     const displayName = cleanName(body.displayName, "Name");
 
@@ -608,22 +700,19 @@ export class GameRoom extends DurableObject<Env> {
       ...room.memberships.filter((item) => item.userId !== sessionId),
       membership,
     ];
-    await this.saveRoom();
+    await this.saveRoom(room);
     this.broadcast();
     return json({ data: publicMembership(membership) });
   }
 
-  private async saveProof(request: Request, sessionId: string, origin: string) {
-    const room = this.requireRoom();
+  private async saveProof(
+    upload: ProofUpload,
+    sessionId: string,
+    origin: string,
+  ) {
+    const room = structuredClone(this.requireRoom());
     const membership = requirePlayer(room, sessionId);
-    const gameId = request.headers.get("x-game-id") ?? "";
-    const groupId = request.headers.get("x-group-id") ?? "";
-    const taskId = request.headers.get("x-task-id") ?? "";
-    const suppliedImageName = cleanFileName(
-      decodeHeaderValue(request.headers.get("x-file-name") ?? "proof.jpg"),
-    );
-    const declaredContentType =
-      request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+    const { bytes, contentType, gameId, groupId, imageName, taskId } = upload;
     requireGameId(room, gameId);
     const ownerId = getMembershipOwnerId(room, membership);
 
@@ -645,32 +734,7 @@ export class GameRoom extends DurableObject<Env> {
     if (!task || !isAssigned || task.free) {
       throw new HttpError(400, "That task is not available for proof submission.");
     }
-    if (!isAllowedImageType(declaredContentType)) {
-      throw new HttpError(415, "Upload a JPG, PNG, or WebP proof photo.");
-    }
-
-    const bytes = await readLimitedBytes(
-      request,
-      MAX_PROOF_BYTES,
-      "Proof photos must be 500 KB or smaller.",
-    );
-    if (bytes.byteLength === 0) {
-      throw new HttpError(413, "Proof photos must be 500 KB or smaller.");
-    }
-    const image = inspectImage(bytes);
-    if (image.contentType !== declaredContentType) {
-      throw new HttpError(415, "The proof photo type does not match its image data.");
-    }
-    if (
-      image.width > MAX_IMAGE_DIMENSION ||
-      image.height > MAX_IMAGE_DIMENSION ||
-      image.width * image.height > MAX_IMAGE_PIXELS
-    ) {
-      throw new HttpError(413, "Proof photos must be no larger than 8,192 pixels per side.");
-    }
-
     const now = Date.now();
-    const imageName = normalizeImageFileName(suppliedImageName, image.contentType);
     const existing = room.submissions.find(
       (item) => item.groupId === groupId && item.taskId === taskId,
     );
@@ -689,7 +753,6 @@ export class GameRoom extends DurableObject<Env> {
         "This room has reached its 25 MB photo limit. Remove proofs before adding more.",
       );
     }
-    const contentType = image.contentType;
     const submission: StoredSubmission = existing
       ? {
           ...existing,
@@ -717,12 +780,13 @@ export class GameRoom extends DurableObject<Env> {
         };
     submission.imagePath = `${room.game.code}/${submission.id}`;
 
-    await this.ctx.storage.put(proofKey(submission.id), bytes);
     room.submissions = [
       submission,
       ...room.submissions.filter((item) => item.id !== submission.id),
     ];
-    await this.saveRoom();
+    await this.saveRoom(room, {
+      proofWrites: [{ submissionId: submission.id, bytes }],
+    });
     this.broadcast();
     return json({ data: publicSubmission(submission, room, origin) });
   }
@@ -747,17 +811,24 @@ export class GameRoom extends DurableObject<Env> {
 
     return new Response(bytes, {
       headers: {
-        "cache-control": "private, max-age=300",
+        "cache-control": "private, no-store, max-age=0",
         "content-disposition": `inline; filename="${safeHeaderValue(submission.imageName)}"`,
         "content-type": submission.contentType,
+        expires: "0",
+        pragma: "no-cache",
         "x-content-type-options": "nosniff",
       },
     });
   }
 
-  private async performAction(request: Request, sessionId: string, origin: string) {
-    const room = this.requireRoom();
-    const body = await readJson<ActionRequest>(request);
+  private async performAction(
+    body: ActionRequest,
+    sessionId: string,
+    origin: string,
+  ) {
+    // Mutate a staged copy so rejected validation or persistence cannot leak
+    // partial room changes through the in-memory Durable Object state.
+    const room = structuredClone(this.requireRoom());
     if (room.memberships.some((item) => item.userId === sessionId)) {
       this.recordMutation(sessionId);
     }
@@ -766,6 +837,7 @@ export class GameRoom extends DurableObject<Env> {
 
     if (body.action === "completeTask") {
       const membership = requirePlayer(room, sessionId);
+      const proofSubmissionIdsToDelete: string[] = [];
       requireGameId(room, payload.gameId);
       if (room.game.boardHidden) {
         throw new HttpError(409, "The board is hidden until the host starts the game.");
@@ -787,7 +859,9 @@ export class GameRoom extends DurableObject<Env> {
       );
       if (existing) {
         room.submissions = room.submissions.filter((item) => item.id !== existing.id);
-        if (existing.imagePath) await this.ctx.storage.delete(proofKey(existing.id));
+        if (existing.imagePath) {
+          proofSubmissionIdsToDelete.push(existing.id);
+        }
         data = null;
       } else {
         const now = Date.now();
@@ -807,7 +881,7 @@ export class GameRoom extends DurableObject<Env> {
         room.submissions.unshift(submission);
         data = publicSubmission(submission, room, origin);
       }
-      await this.saveRoom();
+      await this.saveRoom(room, { proofSubmissionIdsToDelete });
       this.broadcast();
       return json({ data });
     }
@@ -815,13 +889,19 @@ export class GameRoom extends DurableObject<Env> {
     if (body.action === "leaveGame") {
       const membership = requirePlayer(room, sessionId);
       requireGameId(room, payload.gameId);
-      const deleted = await deleteMembershipData(this.ctx.storage, room, membership);
-      await this.saveRoom();
+      const {
+        proofSubmissionIdsToDelete,
+        ...deleted
+      } = deleteMembershipData(room, membership);
+      await this.saveRoom(room, { proofSubmissionIdsToDelete });
       this.broadcast("player-left");
+      this.closeMembershipSockets(membership.userId, "Player left");
       return json({ data: deleted });
     }
 
     requireHost(room, sessionId);
+    const membershipSessionsToClose: string[] = [];
+    const proofSubmissionIdsToDelete: string[] = [];
 
     switch (body.action) {
       case "configureGame": {
@@ -861,12 +941,22 @@ export class GameRoom extends DurableObject<Env> {
       }
       case "kickPlayer": {
         const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
-        data = await deleteMembershipData(this.ctx.storage, room, membership);
+        const deletion = deleteMembershipData(room, membership);
+        proofSubmissionIdsToDelete.push(
+          ...deletion.proofSubmissionIdsToDelete,
+        );
+        data = publicMembershipDeletion(deletion);
+        membershipSessionsToClose.push(membership.userId);
         break;
       }
       case "deletePlayerData": {
         const membership = requirePlayerMembership(room, stringValue(payload.membershipId));
-        data = await deleteMembershipData(this.ctx.storage, room, membership);
+        const deletion = deleteMembershipData(room, membership);
+        proofSubmissionIdsToDelete.push(
+          ...deletion.proofSubmissionIdsToDelete,
+        );
+        data = publicMembershipDeletion(deletion);
+        membershipSessionsToClose.push(membership.userId);
         break;
       }
       case "promotePlayer": {
@@ -890,6 +980,7 @@ export class GameRoom extends DurableObject<Env> {
           throw new HttpError(400, "Choose a co-host.");
         }
         room.memberships = room.memberships.filter((item) => item.id !== membership.id);
+        membershipSessionsToClose.push(membership.userId);
         data = publicMembership(membership);
         break;
       }
@@ -998,10 +1089,30 @@ export class GameRoom extends DurableObject<Env> {
       }
       case "resetGameProofs": {
         requireGameId(room, payload.gameId);
+        const patch =
+          payload.patch === undefined ? {} : objectValue(payload.patch);
+        if (
+          Object.keys(patch).some((key) => !RESET_GAME_PATCH_KEYS.has(key))
+        ) {
+          throw new HttpError(400, "Reset includes an unsupported room change.");
+        }
+        const patchedRoom: StoredRoom = {
+          ...room,
+          game: { ...room.game },
+        };
+        applyGamePatch(patchedRoom, patch);
         const deletedSubmissions = room.submissions.length;
-        await deleteProofs(this.ctx.storage, room.submissions);
+        const deletedImages = room.submissions.filter((item) =>
+          Boolean(item.imagePath)
+        ).length;
+        proofSubmissionIdsToDelete.push(
+          ...room.submissions
+            .filter((item) => Boolean(item.imagePath))
+            .map((item) => item.id),
+        );
+        room.game = patchedRoom.game;
         room.submissions = [];
-        data = { deletedImages: deletedSubmissions, deletedSubmissions };
+        data = { deletedImages, deletedSubmissions };
         break;
       }
       case "abandonGameLobby": {
@@ -1013,10 +1124,17 @@ export class GameRoom extends DurableObject<Env> {
         const deletedSubmissions = room.submissions.length;
         const removedMemberships = room.memberships.length;
         const code = room.game.code;
-        this.broadcast("closed");
-        await this.releaseRegistry(code);
         await this.ctx.storage.deleteAll();
         this.room = null;
+        try {
+          await this.releaseRegistry(code);
+        } catch {
+          warnOperationalEvent("room_abandon_registry_release_failed", {
+            localCleanupContinued: true,
+          });
+        }
+        this.broadcast("closed");
+        this.closeAllSockets("Room closed");
         return json({
           data: { deletedImages: deletedSubmissions, deletedSubmissions, removedMemberships },
         });
@@ -1239,8 +1357,11 @@ export class GameRoom extends DurableObject<Env> {
         throw new HttpError(400, "Unknown room action.");
     }
 
-    await this.saveRoom();
+    await this.saveRoom(room, { proofSubmissionIdsToDelete });
     this.broadcast();
+    membershipSessionsToClose.forEach((membershipSession) => {
+      this.closeMembershipSockets(membershipSession, "Membership removed");
+    });
     return json({ data });
   }
 
@@ -1266,16 +1387,26 @@ export class GameRoom extends DurableObject<Env> {
               : item.role === "player" && item.groupId === membership.groupId,
           )
         : [];
+    const visibleBoardAssignments = !canSeeBoard
+      ? []
+      : isHost
+        ? room.boardAssignments
+        : isPlayer
+          ? room.boardAssignments.filter(
+              (item) => item.groupId === getMembershipOwnerId(room, membership),
+            )
+          : [];
 
     return json({
+      revision: room.revision,
       game: room.game,
       groups: [...room.groups].sort((a, b) => a.sortOrder - b.sortOrder).map(toPublicGroup),
       tasks: canSeeBoard
         ? [...room.tasks].sort((a, b) => a.sortOrder - b.sortOrder)
         : [],
-      boardAssignments: canSeeBoard
-        ? [...room.boardAssignments].sort((a, b) => a.slotOrder - b.slotOrder)
-        : [],
+      boardAssignments: [...visibleBoardAssignments].sort(
+        (a, b) => a.slotOrder - b.slotOrder,
+      ),
       stops: [...room.stops].sort((a, b) => a.sortOrder - b.sortOrder),
       membership: membership ? publicMembership(membership) : null,
       memberships: isHost
@@ -1323,9 +1454,46 @@ export class GameRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async saveRoom() {
-    const room = this.requireRoom();
-    await this.ctx.storage.put(ROOM_KEY, room);
+  private async saveRoom(
+    room = this.requireRoom(),
+    changes: {
+      proofSubmissionIdsToDelete?: string[];
+      proofWrites?: Array<{ submissionId: string; bytes: ArrayBuffer }>;
+    } = {},
+  ) {
+    const persistedRoom: StoredRoom = {
+      ...room,
+      revision: room.revision + 1,
+    };
+    const proofKeysToDelete = [
+      ...new Set(
+        (changes.proofSubmissionIdsToDelete ?? []).map((submissionId) =>
+          proofKey(submissionId)
+        ),
+      ),
+    ];
+    const proofWrites = changes.proofWrites ?? [];
+
+    if (proofKeysToDelete.length > 0 || proofWrites.length > 0) {
+      await this.ctx.storage.transaction(async (transaction) => {
+        for (
+          let index = 0;
+          index < proofKeysToDelete.length;
+          index += 128
+        ) {
+          await transaction.delete(
+            proofKeysToDelete.slice(index, index + 128),
+          );
+        }
+        for (const write of proofWrites) {
+          await transaction.put(proofKey(write.submissionId), write.bytes);
+        }
+        await transaction.put(ROOM_KEY, persistedRoom);
+      });
+    } else {
+      await this.ctx.storage.put(ROOM_KEY, persistedRoom);
+    }
+    this.room = persistedRoom;
   }
 
   private requireRoom() {
@@ -1334,7 +1502,13 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private broadcast(reason = "change") {
-    const message = JSON.stringify({ type: "room-change", reason });
+    const message = JSON.stringify({
+      type: "room-change",
+      reason,
+      ...(reason === "closed" || reason === "expired"
+        ? {}
+        : { revision: this.room?.revision ?? 0 }),
+    });
     for (const socket of this.ctx.getWebSockets()) {
       try {
         socket.send(message);
@@ -1342,6 +1516,90 @@ export class GameRoom extends DurableObject<Env> {
         socket.close(1011, "Update failed");
       }
     }
+  }
+
+  private closeMembershipSockets(sessionId: string, reason: string) {
+    for (const socket of this.ctx.getWebSockets(sessionId)) {
+      try {
+        socket.close(1000, reason);
+      } catch {
+        // The saved membership state remains authoritative.
+      }
+    }
+  }
+
+  private closeAllSockets(reason: string) {
+    for (const socket of this.ctx.getWebSockets()) {
+      try {
+        socket.close(1000, reason);
+      } catch {
+        // The room is already deleted.
+      }
+    }
+  }
+
+  private reserveProofUpload(request: Request, sessionId: string) {
+    const room = this.requireRoom();
+    const membership = requirePlayer(room, sessionId);
+    const gameId = request.headers.get("x-game-id") ?? "";
+    const groupId = request.headers.get("x-group-id") ?? "";
+    const taskId = request.headers.get("x-task-id") ?? "";
+    requireGameId(room, gameId);
+    const ownerId = getMembershipOwnerId(room, membership);
+
+    if (ownerId !== groupId) {
+      throw new HttpError(403, "Players can only submit for their own board.");
+    }
+    if (room.game.boardHidden) {
+      throw new HttpError(
+        409,
+        "The board is hidden until the host starts the hunt.",
+      );
+    }
+    if (room.game.proofMode === "none") {
+      throw new HttpError(409, "This game does not use photo proof.");
+    }
+    const task = room.tasks.find((item) => item.id === taskId);
+    const isAssigned = room.boardAssignments.some(
+      (item) => item.groupId === groupId && item.taskId === taskId,
+    );
+    if (!task || !isAssigned || task.free) {
+      throw new HttpError(
+        400,
+        "That task is not available for proof submission.",
+      );
+    }
+
+    this.recordMutation(sessionId);
+    const membershipCount = this.proofUploadsInFlight.get(sessionId) ?? 0;
+    if (
+      membershipCount >= MAX_PROOF_UPLOADS_IN_FLIGHT_PER_MEMBERSHIP ||
+      this.proofUploadsInFlightTotal >= MAX_PROOF_UPLOADS_IN_FLIGHT_PER_ROOM
+    ) {
+      throw new HttpError(
+        429,
+        "Too many proof photos are uploading. Wait for one to finish.",
+      );
+    }
+
+    this.proofUploadsInFlight.set(sessionId, membershipCount + 1);
+    this.proofUploadsInFlightTotal += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const nextMembershipCount =
+        (this.proofUploadsInFlight.get(sessionId) ?? 1) - 1;
+      if (nextMembershipCount > 0) {
+        this.proofUploadsInFlight.set(sessionId, nextMembershipCount);
+      } else {
+        this.proofUploadsInFlight.delete(sessionId);
+      }
+      this.proofUploadsInFlightTotal = Math.max(
+        0,
+        this.proofUploadsInFlightTotal - 1,
+      );
+    };
   }
 
   private async checkHostRateLimit(
@@ -1538,6 +1796,55 @@ async function readLimitedBytes(
     offset += chunk.byteLength;
   }
   return bytes.buffer;
+}
+
+async function readProofUpload(request: Request): Promise<ProofUpload> {
+  const gameId = request.headers.get("x-game-id") ?? "";
+  const groupId = request.headers.get("x-group-id") ?? "";
+  const taskId = request.headers.get("x-task-id") ?? "";
+  const suppliedImageName = cleanFileName(
+    decodeHeaderValue(request.headers.get("x-file-name") ?? "proof.jpg"),
+  );
+  const declaredContentType =
+    request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ??
+    "";
+
+  if (!isAllowedImageType(declaredContentType)) {
+    throw new HttpError(415, "Upload a JPG, PNG, or WebP proof photo.");
+  }
+
+  const bytes = await readLimitedBytes(
+    request,
+    MAX_PROOF_BYTES,
+    "Proof photos must be 500 KB or smaller.",
+  );
+  if (bytes.byteLength === 0) {
+    throw new HttpError(413, "Proof photos must be 500 KB or smaller.");
+  }
+
+  const image = inspectImage(bytes);
+  if (image.contentType !== declaredContentType) {
+    throw new HttpError(415, "The proof photo type does not match its image data.");
+  }
+  if (
+    image.width > MAX_IMAGE_DIMENSION ||
+    image.height > MAX_IMAGE_DIMENSION ||
+    image.width * image.height > MAX_IMAGE_PIXELS
+  ) {
+    throw new HttpError(
+      413,
+      "Proof photos must be no larger than 8,192 pixels per side.",
+    );
+  }
+
+  return {
+    bytes,
+    contentType: image.contentType,
+    gameId,
+    groupId,
+    imageName: normalizeImageFileName(suppliedImageName, image.contentType),
+    taskId,
+  };
 }
 
 function normalizeGameCode(value: string) {
@@ -1928,7 +2235,15 @@ function applyGamePatch(room: StoredRoom, patch: Record<string, unknown>) {
     room.game.timerSecondsTotal = Math.max(0, positiveInteger(patch.timerSecondsTotal, 0));
   }
   if (patch.boardHidden !== undefined) room.game.boardHidden = Boolean(patch.boardHidden);
-  if (patch.setupComplete !== undefined) room.game.setupComplete = Boolean(patch.setupComplete);
+  // Evaluate this rule against the saved pre-patch game state. Otherwise one
+  // request could set setupComplete=false and enable player exports after play
+  // had already begun.
+  if (patch.playerExportMode !== undefined) {
+    applyPlayerExportMode(room, patch.playerExportMode);
+  }
+  if (patch.setupComplete !== undefined) {
+    applySetupComplete(room, patch.setupComplete);
+  }
   if (patch.lobbyOpen !== undefined) room.game.lobbyOpen = Boolean(patch.lobbyOpen);
   if (patch.teamsLocked !== undefined) room.game.teamsLocked = Boolean(patch.teamsLocked);
 }
@@ -1972,6 +2287,9 @@ function applyGameConfiguration(room: StoredRoom, config: Record<string, unknown
       "approval mode",
     );
   }
+  if (config.playerExportMode !== undefined) {
+    applyPlayerExportMode(room, config.playerExportMode);
+  }
   if (config.timerMode !== undefined) {
     room.game.timerMode = enumValue(
       config.timerMode,
@@ -1989,7 +2307,7 @@ function applyGameConfiguration(room: StoredRoom, config: Record<string, unknown
   if (config.lobbyOpen !== undefined) room.game.lobbyOpen = Boolean(config.lobbyOpen);
   if (config.teamsLocked !== undefined) room.game.teamsLocked = Boolean(config.teamsLocked);
   if (config.setupComplete !== undefined) {
-    room.game.setupComplete = Boolean(config.setupComplete);
+    applySetupComplete(room, config.setupComplete);
   }
 
   if (room.game.playMode === "individual") {
@@ -2019,6 +2337,32 @@ function enumValue<const T extends readonly string[]>(
   return parsed as T[number];
 }
 
+function applyPlayerExportMode(room: StoredRoom, value: unknown) {
+  const mode = enumValue(
+    value,
+    ["host-only", "team-after-review"] as const,
+    "player export mode",
+  );
+  if (mode === "team-after-review" && room.game.setupComplete) {
+    throw new HttpError(
+      409,
+      "Enable player presentations before the hunt starts.",
+    );
+  }
+  room.game.playerExportMode = mode;
+}
+
+function applySetupComplete(room: StoredRoom, value: unknown) {
+  const setupComplete = Boolean(value);
+  if (!setupComplete && room.game.setupComplete) {
+    throw new HttpError(
+      409,
+      "A started hunt cannot return to pre-start setup.",
+    );
+  }
+  room.game.setupComplete = setupComplete;
+}
+
 function applyRoomTemplate(room: StoredRoom, template: string, startTime?: string) {
   const templateId = template.trim().toLowerCase();
   room.game.setupComplete = false;
@@ -2026,6 +2370,7 @@ function applyRoomTemplate(room: StoredRoom, template: string, startTime?: strin
   room.game.phase = "review";
   room.game.activeStopId = null;
   room.game.timerRunning = false;
+  room.game.playerExportMode = "host-only";
   room.submissions = [];
 
   const gameKit = getGameKit(templateId);
@@ -2242,22 +2587,13 @@ function formatClockMinutes(totalMinutes: number) {
   return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
 }
 
-async function deleteProofs(storage: DurableObjectStorage, submissions: StoredSubmission[]) {
-  const keys = submissions.map((item) => proofKey(item.id));
-  for (let index = 0; index < keys.length; index += 128) {
-    await storage.delete(keys.slice(index, index + 128));
-  }
-}
-
-async function deleteMembershipData(
-  storage: DurableObjectStorage,
+function deleteMembershipData(
   room: StoredRoom,
   membership: StoredMembership,
 ) {
   const submissions = room.submissions.filter(
     (item) => item.submittedBy === membership.userId,
   );
-  await deleteProofs(storage, submissions);
   const submissionIds = new Set(submissions.map((item) => item.id));
   room.submissions = room.submissions.filter((item) => !submissionIds.has(item.id));
   room.memberships = room.memberships.filter((item) => item.id !== membership.id);
@@ -2270,6 +2606,19 @@ async function deleteMembershipData(
     membership: publicMembership(membership),
     deletedSubmissions: submissions.length,
     deletedImages: submissions.filter((item) => Boolean(item.imagePath)).length,
+    proofSubmissionIdsToDelete: submissions
+      .filter((item) => Boolean(item.imagePath))
+      .map((item) => item.id),
+  };
+}
+
+function publicMembershipDeletion(
+  deletion: ReturnType<typeof deleteMembershipData>,
+) {
+  return {
+    membership: deletion.membership,
+    deletedSubmissions: deletion.deletedSubmissions,
+    deletedImages: deletion.deletedImages,
   };
 }
 

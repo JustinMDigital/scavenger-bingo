@@ -815,6 +815,7 @@ img {
 }
 
 .field span,
+.field > label,
 .group-field legend {
   color: var(--ink);
   font-size: 0.92rem;
@@ -858,6 +859,33 @@ img {
     border-color 160ms var(--ease-out),
     background 160ms var(--ease-out),
     color 160ms var(--ease-out);
+}
+
+.host-pin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.host-pin-actions .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.host-pin-actions svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.host-pin-actions .text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.host-pin-copy-status {
+  color: var(--success) !important;
 }
 
 .stop-field input,
@@ -1418,6 +1446,11 @@ img {
   transform-origin: bottom center;
   animation: sheet-in 190ms var(--ease-out-expo);
   contain: paint;
+}
+
+.selected-task:focus {
+  outline: 3px solid var(--primary);
+  outline-offset: 3px;
 }
 
 .selected-task-close {
@@ -5769,6 +5802,34 @@ img {
   padding: 0.9rem;
 }
 
+.player-export-toggle,
+.player-export-approval-toggle,
+.slides-export-copy-confirmation {
+  align-items: flex-start;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+.player-export-locked-note {
+  grid-column: 1 / -1;
+  margin-block-start: calc(var(--space-xs) * -1);
+  color: var(--muted);
+}
+
+.player-export-approval-toggle,
+.slides-export-copy-confirmation {
+  border: 1px solid color-mix(in oklch, var(--primary) 30%, var(--line));
+  border-radius: 0.9rem;
+  background: color-mix(in oklch, var(--primary-soft) 35%, transparent);
+  padding: 0.9rem;
+}
+
+.join-export-notice {
+  border-inline-start: 3px solid var(--primary);
+  padding-inline-start: var(--space-sm);
+  color: var(--muted);
+}
+
 .pending-proof-discard {
   margin-top: 0.65rem;
   width: 100%;
@@ -5899,6 +5960,10 @@ img {
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.slides-export-copy-confirmation {
+  margin-block-start: var(--space-md);
 }
 
 .player-slides-export-summary {

@@ -14,8 +14,9 @@ substitute for a person or organization reviewing their own obligations.
   limits. The application does not store the original IP address in room data.
 - A failed proof photo may be held in that browser's IndexedDB for retry. It is
   scoped to the player membership and expires after seven days.
-- When a player chooses Google Slides export, a short-lived Google access token
-  is held only in browser memory while the presentation is created.
+- When a host or authorized player chooses Google Slides export, a short-lived
+  Google access token is held only in browser memory while that presentation is
+  created. Account selection is requested on every attempt.
 
 ## Data not collected by this repository
 
@@ -27,20 +28,32 @@ substitute for a person or organization reviewing their own obligations.
   EXIF metadata such as GPS and device details.
 - Google access tokens in browser storage, room data, logs, or the service's
   server.
+- Cached Google access tokens between export attempts. The Google library is not
+  loaded until the user chooses the Google export action.
 
 ## Processors and transfers
 
-- Cloudflare serves the application and stores temporary Durable Object room
-  data and proof bytes.
-- A player may explicitly export a finished board to Google Drive. The browser
-  requests the narrow `drive.file` permission and uploads a new presentation
-  containing the game and team names, current team members, progress, prompts,
-  proof photos, and submitter attribution. The app does not list or read the
-  player's other Drive files.
-- The exported presentation is a separate copy governed by the player's Google
-  account and any policies that apply to it. It remains in Drive until the
-  player or Google Workspace administrator deletes it.
-- Google user data is used only to provide the player-requested export. It is
+- Cloudflare Workers Static Assets and Durable Objects are the sole current
+  application runtime. Cloudflare serves the application and stores temporary
+  room data and proof bytes. There is no active Vercel runtime.
+- Presentation export is host-only by default. Before the hunt starts, a host
+  may authorize player exports. That authorization is limited to the player's
+  same-team, current-board presentation and becomes available only after review
+  and board reveal. It does not grant access to the full roster, another team's
+  data, or a proof ZIP; those remain host-only.
+- Before each player presentation export, the player confirms that a separate
+  copy will be created. A Google export then loads Google's library, asks the
+  user to select an account, requests the narrow `drive.file` permission, and
+  uploads the new presentation directly from the browser. The presentation may
+  include the game and team names, current team members, current-board progress
+  and prompts, proof photos, and photographer/submitter credits. The app does
+  not list or read the user's other Drive files.
+- The exported presentation is a separate copy governed by the exporting
+  person's Google account and any policies that apply to it. A downloaded
+  presentation is governed by the device and organization that keeps it. Either
+  copy remains until its owner or Google Workspace administrator deletes it;
+  disabling export, leaving, deleting the room, or room expiry cannot recall it.
+- Google user data is used only to provide the user-requested export. It is
   not sold, used for advertising or profiling, or transferred for unrelated
   purposes. This use follows the Google API Services User Data Policy,
   including its Limited Use requirements.
@@ -60,6 +73,9 @@ substitute for a person or organization reviewing their own obligations.
   membership owner are purged.
 - There is no backup or recovery of expired, abandoned, reset, or individually
   deleted room data.
+- Separate presentation and proof ZIP copies are not room data. Hosts and
+  authorized players must delete those copies separately under the policy that
+  applies to their group.
 
 ## Photo-safe defaults
 
@@ -75,4 +91,8 @@ substitute for a person or organization reviewing their own obligations.
 
 Players should send access or deletion requests to the host who supplied the
 room code. The host can act immediately inside the room. A monitored public
-privacy contact must be confirmed before broad self-service release.
+privacy contact must be confirmed before broad self-service release. School or
+organization approval is still required for nicknames, optional photos,
+deletion, and any separately retained export. Google Cloud/OAuth/Drive setup,
+the custom domain/TLS, production account ownership and deployment, and real
+shared-device/school-network validation are external release gates.
