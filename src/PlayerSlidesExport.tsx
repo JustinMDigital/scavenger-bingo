@@ -318,14 +318,7 @@ const ExportBoardSnapshot = forwardRef<HTMLDivElement, {
       <div className="export-board-header">
         <div className="export-board-title">
           <div className="export-board-brand">
-            <svg aria-hidden="true" viewBox="0 0 64 64">
-              <rect width="64" height="64" rx="14" fill="#153c31" />
-              <path d="M14 49c0-7.4 5.6-10.2 12-12.4 7.2-2.4 12-5.4 12-14.6" fill="none" stroke="#ff7043" strokeWidth="6" strokeLinecap="round" />
-              <circle cx="14" cy="49" r="5" fill="#ff7043" />
-              <path d="M38 10v30" fill="none" stroke="#fff8ec" strokeWidth="6" strokeLinecap="round" />
-              <path d="M41 12h14l-4.2 7L55 26H41V12Z" fill="#fff8ec" />
-            </svg>
-            <span>RALLY HUNT</span>
+            <img alt="" src="/apple-touch-icon.png" />
           </div>
           <div>
             <h2>{game.name}</h2>

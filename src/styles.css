@@ -6891,22 +6891,12 @@ img {
 }
 
 .export-board-brand {
-  display: grid;
   flex: 0 0 auto;
-  justify-items: center;
-  gap: 7px;
 }
 
-.export-board-brand svg {
+.export-board-brand img {
   width: 56px;
   height: 56px;
-}
-
-.export-board-brand span {
-  color: #c8320d;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
 }
 
 .export-board-header h2 {

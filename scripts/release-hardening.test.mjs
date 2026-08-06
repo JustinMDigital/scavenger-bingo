@@ -92,6 +92,20 @@ test("static headers deny framing while allowing the deliberate Google export fl
   assert.match(headers, /\/release\.json\s+Cache-Control: no-store/);
 });
 
+test("initial homepage HTML identifies Rally Hunt and explains its purpose", () => {
+  const homepage = readFileSync(
+    new URL("../index.html", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(homepage, /<title>Rally Hunt<\/title>/);
+  assert.match(homepage, /<h1>Rally Hunt<\/h1>/);
+  assert.match(homepage, /browser-based scavenger hunt app/);
+  assert.match(homepage, /Google Drive/);
+  assert.match(homepage, /href="\/privacy"/);
+  assert.match(homepage, /href="\/terms"/);
+});
+
 test("read-only CI pins official actions and does not persist checkout credentials", () => {
   const workflow = readFileSync(
     new URL("../.github/workflows/ci.yml", import.meta.url),

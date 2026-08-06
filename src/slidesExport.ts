@@ -9,7 +9,6 @@ const POWERPOINT_MIME_TYPE =
 const SLIDE_WIDTH = 13.333;
 const SLIDE_HEIGHT = 7.5;
 const BRAND_NAME = "Rally Hunt";
-const BRAND_WORDMARK = "RALLY HUNT";
 const COLORS = {
   accent: "C8320D",
   accentDark: "7A240F",
@@ -363,6 +362,7 @@ export async function createPlayerSlidesDeck({
   }
 
   onProgress?.({ label: "Building presentation" });
+  const rallyFlagIconData = await loadRallyFlagIcon();
   const { default: PptxGenJSClass } = await import("pptxgenjs");
   const pptx = new PptxGenJSClass();
   pptx.layout = "LAYOUT_WIDE";
@@ -375,15 +375,15 @@ export async function createPlayerSlidesDeck({
     bodyFontFace: "Aptos",
   };
 
-  addTitleSlide(pptx, model);
-  addBoardSlide(pptx, model, boardImage);
+  addTitleSlide(pptx, model, rallyFlagIconData);
+  addBoardSlide(pptx, model, boardImage, rallyFlagIconData);
 
   for (const item of model.itemSlides) {
     const photo = item.submission ? photos.get(item.submission.id) ?? null : null;
-    addItemSlide(pptx, item, photo);
+    addItemSlide(pptx, item, photo, rallyFlagIconData);
   }
 
-  addIncompleteSlide(pptx, model);
+  addIncompleteSlide(pptx, model, rallyFlagIconData);
   const output = await pptx.write({ compression: true, outputType: "blob" });
   const blob =
     output instanceof Blob
@@ -465,7 +465,11 @@ export function downloadPresentation(artifact: PresentationArtifact) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function addTitleSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
+function addTitleSlide(
+  pptx: PptxGenJS,
+  model: PlayerSlidesExportModel,
+  rallyFlagIconData: string,
+) {
   const slide = pptx.addSlide();
   slide.background = { color: COLORS.background };
   slide.addShape(pptx.ShapeType.rect, {
@@ -476,7 +480,7 @@ function addTitleSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
     fill: { color: COLORS.accent },
     line: { color: COLORS.accent },
   });
-  addRallyHuntBrand(pptx, slide, { x: 0.72, y: 0.46, size: 0.48, wordmark: true });
+  addRallyHuntBrand(slide, rallyFlagIconData, { x: 0.72, y: 0.46, size: 0.48 });
   slide.addText(model.gameName, {
     x: 0.72,
     y: 1.15,
@@ -581,6 +585,7 @@ function addBoardSlide(
   pptx: PptxGenJS,
   model: PlayerSlidesExportModel,
   boardImage: string | null,
+  rallyFlagIconData: string,
 ) {
   const slide = pptx.addSlide();
   slide.background = { color: COLORS.background };
@@ -594,7 +599,7 @@ function addBoardSlide(
       h: SLIDE_HEIGHT,
       altText: `${model.groupName} board snapshot`,
     });
-    addRallyHuntFooter(pptx, slide);
+    addRallyHuntFooter(slide, rallyFlagIconData);
     return;
   }
 
@@ -675,13 +680,14 @@ function addBoardSlide(
       margin: 0,
     });
   });
-  addRallyHuntFooter(pptx, slide);
+  addRallyHuntFooter(slide, rallyFlagIconData);
 }
 
 function addItemSlide(
   pptx: PptxGenJS,
   item: PlayerSlidesExportItem,
   photo: LoadedSlideImage | null,
+  rallyFlagIconData: string,
 ) {
   const slide = pptx.addSlide();
   const statusStyle = getStatusStyle(item.status);
@@ -831,10 +837,14 @@ function addItemSlide(
       margin: 0,
     });
   }
-  addRallyHuntFooter(pptx, slide);
+  addRallyHuntFooter(slide, rallyFlagIconData);
 }
 
-function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
+function addIncompleteSlide(
+  pptx: PptxGenJS,
+  model: PlayerSlidesExportModel,
+  rallyFlagIconData: string,
+) {
   const slide = pptx.addSlide();
   slide.background = { color: COLORS.background };
   slide.addText(
@@ -887,7 +897,7 @@ function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
       fontSize: 50,
       margin: 0,
     });
-    addRallyHuntFooter(pptx, slide);
+    addRallyHuntFooter(slide, rallyFlagIconData);
     return;
   }
 
@@ -934,93 +944,60 @@ function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
       valign: "middle",
     });
   });
-  addRallyHuntFooter(pptx, slide);
+  addRallyHuntFooter(slide, rallyFlagIconData);
 }
 
 type PresentationSlide = ReturnType<PptxGenJS["addSlide"]>;
 
 function addRallyHuntBrand(
-  pptx: PptxGenJS,
   slide: PresentationSlide,
+  rallyFlagIconData: string,
   {
     size,
-    wordmark = false,
     x,
     y,
-  }: { size: number; wordmark?: boolean; x: number; y: number },
+  }: { size: number; x: number; y: number },
 ) {
-  slide.addShape(pptx.ShapeType.roundRect, {
+  slide.addImage({
+    data: rallyFlagIconData,
     x,
     y,
     w: size,
     h: size,
-    rectRadius: size * 0.12,
-    fill: { color: COLORS.field },
-    line: { color: COLORS.field },
+    altText: "Rally Hunt flag",
   });
-  slide.addShape(pptx.ShapeType.ellipse, {
-    x: x + size * 0.18,
-    y: y + size * 0.7,
-    w: size * 0.14,
-    h: size * 0.14,
-    fill: { color: COLORS.accent },
-    line: { color: COLORS.accent },
-  });
-  slide.addShape(pptx.ShapeType.line, {
-    x: x + size * 0.25,
-    y: y + size * 0.72,
-    w: size * 0.39,
-    h: -size * 0.34,
-    line: {
-      color: COLORS.accent,
-      width: Math.max(1.4, size * 5),
-      beginArrowType: "none",
-      endArrowType: "none",
-    },
-  });
-  slide.addShape(pptx.ShapeType.line, {
-    x: x + size * 0.65,
-    y: y + size * 0.22,
-    w: 0,
-    h: size * 0.54,
-    line: {
-      color: COLORS.white,
-      width: Math.max(1.2, size * 4.2),
-      beginArrowType: "none",
-      endArrowType: "none",
-    },
-  });
-  slide.addShape(pptx.ShapeType.rect, {
-    x: x + size * 0.68,
-    y: y + size * 0.24,
-    w: size * 0.22,
-    h: size * 0.17,
-    fill: { color: COLORS.white },
-    line: { color: COLORS.white },
-  });
-
-  if (wordmark) {
-    slide.addText(BRAND_WORDMARK, {
-      x: x + size + 0.14,
-      y: y + size * 0.25,
-      w: 3.1,
-      h: size * 0.5,
-      color: COLORS.accent,
-      bold: true,
-      charSpacing: 2,
-      fontSize: 13,
-      margin: 0,
-    });
-  }
 }
 
-function addRallyHuntFooter(pptx: PptxGenJS, slide: PresentationSlide) {
-  addRallyHuntBrand(pptx, slide, {
-    x: 11.43,
+function addRallyHuntFooter(
+  slide: PresentationSlide,
+  rallyFlagIconData: string,
+) {
+  addRallyHuntBrand(slide, rallyFlagIconData, {
+    x: 12.24,
     y: 6.86,
     size: 0.3,
-    wordmark: true,
   });
+}
+
+async function loadRallyFlagIcon() {
+  const response = await fetch("/icon-192.png", {
+    cache: "force-cache",
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    throw new Error("The Rally Hunt flag icon could not be loaded.");
+  }
+
+  const blob = await response.blob();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+
+  return `data:${blob.type || "image/png"};base64,${btoa(binary)}`;
 }
 
 async function loadSubmissionImage(submission: Submission) {
