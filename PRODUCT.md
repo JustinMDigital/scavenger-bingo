@@ -12,7 +12,7 @@ Anyone can host a temporary game for friends, family, classmates, coworkers, or 
 
 ## Product Purpose
 
-Scavenger Bingo is a reusable, mobile-first game platform. Hosts can run team or free-for-all games, choose 3x3, 4x4, or 5x5 boards, use bingo or blackout winning rules, give everyone the same board or varied boards, and decide whether photo proof is required, optional, or disabled. Timing can be untimed, a simple countdown, or a multi-stop schedule.
+Rally Hunt is a reusable, mobile-first game platform. Hosts can run team or free-for-all games, choose 3x3, 4x4, or 5x5 boards, use bingo or blackout winning rules, give everyone the same board or varied boards, and decide whether photo proof is required, optional, or disabled. Timing can be untimed, a simple countdown, or a multi-stop schedule.
 
 New rooms open in setup instead of assuming a particular event. Presets cover a classic scheduled blackout, quick team bingo, and free-for-all play; custom setup exposes the same choices directly. Existing rooms are upgraded in place with their original teams, 5x5 blackout rules, proofs, and scheduled stops preserved.
 
@@ -24,7 +24,7 @@ Ease of use is the top product priority. New features should fit the existing pl
 
 ## Positioning
 
-Scavenger Bingo brings Kahoot-like ease to real-world scavenger games: a host can set up a game quickly, share a room code or link, and let invited players join without creating accounts. Unlike a fixed printable board, the room can coordinate teams, timing, live progress, optional proof photos, and host review while the activity is happening.
+Rally Hunt brings Kahoot-like ease to real-world scavenger games: a host can set up a game quickly, share a room code or link, and let invited players join without creating accounts. Unlike a fixed printable board, the room can coordinate teams, timing, live progress, optional proof photos, and host review while the activity is happening.
 
 ## Operating Context
 
@@ -38,19 +38,19 @@ The current product does not require player or host accounts. Accounts may be in
 
 ## Game Template Library
 
-Hosts can begin with a curated game kit that combines recommended rules, teams, timing, and a complete task pool. Applying a template copies it into the temporary room; the host can then change any setting or task without affecting the original template. The initial library covers a no-photo classroom starter, quick general play, individual play, birthday parties, city exploration, office team-building, and a no-photo indoor game for kids.
+Hosts can begin with a curated game kit that combines recommended rules, teams, timing, and a complete task pool. Applying a template copies it into the temporary room; the host can then change any setting or task without affecting the original template. The reviewed library covers classrooms, quick general play, at-home family play, individual play, birthdays and dinner gatherings, short and extended outdoor hunts, work groups, kids indoors, and solo photo walks.
 
 Blank games start with no selected tasks. The host chooses the board setup, searches a reviewed catalog of 250 all-ages tasks, adds room-local copies, and may edit or reset those copies before shuffling. Shared boards use one board's worth of tasks; varied boards can use a larger pool to reduce overlap naturally. Square-by-square placement remains available as an optional fine-tuning step after the shuffle.
 
-Templates live in a public, searchable library rather than inside the room setup form. Each template has its own page where a host can understand the audience, setting, timing, rules, board size, and task list before starting. A host may create a new room directly from that page. During pre-game setup, the room links back to the same library so the host can safely replace the room setup after a clear warning.
+Templates live in a public, searchable library and are also the fastest path through the first room-setup step. Each template has its own page where a host can understand the audience, setting, timing, photo behavior, rules, board size, and complete task list before starting. A host may create a new room directly from the library, or choose a small set of ready-made starters inside a blank room. Replacing meaningful room setup always requires a clear warning.
 
 Starting the hunt locks template replacement. An active or completed hunt can still open the library, but choosing another template must create a new room so existing players, progress, proofs, rules, and boards are never silently overwritten.
 
-The built-in library is reviewed and intentionally small. A later phase may let account holders save, privately share, and publish their own templates. Public user submissions should only appear after review for safety, privacy, appropriateness, and task quality; submissions should not automatically publish into a public marketplace. The account, ownership, moderation, and publishing model remains an open product decision.
+The built-in library is reviewed and intentionally curated rather than open-ended. A later phase may let account holders save, privately share, and publish their own templates. Public user submissions should only appear after review for safety, privacy, appropriateness, and task quality; submissions should not automatically publish into a public marketplace. The account, ownership, moderation, and publishing model remains an open product decision.
 
 ## Brand Commitments
 
-The current working name is Scavenger Bingo, but a name change is expected. Future work should not treat the current name as a permanent identity asset.
+The product name is Rally Hunt. The route-and-flag mark, deep field green, and trail orange are the core identity assets; bingo and blackout remain game formats within the broader platform.
 
 The product should feel fun, simple, and energetic. The experience should be friendly enough for casual events, but still clear and reliable under time pressure. It should make the game feel active and social without becoming noisy or childish.
 

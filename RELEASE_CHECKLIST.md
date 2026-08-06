@@ -1,4 +1,4 @@
-# Teacher and student release checklist
+# Public beta release checklist
 
 Every required item needs current evidence. A local green build is not a
 production release verdict.
@@ -23,6 +23,8 @@ external approval is implied by local verification.
 - [ ] `npm run release:preflight` passes from the same clean revision with the
   monitored support address and approved Google OAuth client configured.
 - [ ] The preflight's Cloudflare packaging dry run succeeds; no deploy occurs.
+- [ ] Cloudflare's Git integration uploads preview versions only and cannot
+  promote a push directly to the active production deployment.
 - [ ] The generated `release.json` records the expected version, full commit,
   source timestamp, public-configuration fingerprint, release identifier, and
   `dirty: false`; the Cloudflare deployment tag matches that exact identifier.
@@ -37,10 +39,11 @@ external approval is implied by local verification.
 - [ ] Shared-device retry storage keeps memberships separate and removes only
   the intended player's queue.
 - [ ] A local shared-network simulation supports the planned rooms and players
-  without treating one network address as one teacher.
+  without treating one network address as one host.
 - [ ] Keyboard-only use, visible focus, 200% zoom/reflow, reduced motion, and
   assistive-technology checks pass on supported real devices.
-- [ ] At least one real school Chromebook/network pilot is recorded separately.
+- [ ] At least one real organization pilot on the intended devices and network
+  is recorded separately, including a Chromebook when schools are in scope.
 
 ## Privacy, export, and group safety
 
@@ -60,20 +63,20 @@ external approval is implied by local verification.
   behavior and display a monitored contact.
 - [ ] A monitored public support/privacy contact and response owner are
   confirmed.
-- [ ] The organization or school approves the activity, notice, nickname
+- [ ] The organizer or organization approves the activity, notice, nickname
   guidance, photo policy, deletion process, and separately retained exports.
 - [ ] A real shared-device test confirms queued photos and nicknames do not
-  cross between students.
+  cross between participants.
 
 ## Capacity and operations
 
 - [ ] Cloudflare account plan and current Worker/Durable Object limits support
   the expected rooms, requests, sockets, CPU, and 25 MB room proof cap.
-- [ ] A real school NAT test allows a full class and multiple teachers without
-  sharing the per-browser creation limit.
+- [ ] A real shared-network test allows the expected group and multiple hosts
+  without sharing the per-browser creation limit.
 - [ ] Logs/observability are available to the incident owner.
 - [ ] Privacy-safe warning events identify creation, PIN, join, socket,
-  mutation, and proof-capacity incidents without student data or credentials.
+  mutation, and proof-capacity incidents without participant data or credentials.
 - [ ] An automated local incident rehearsal verifies health, lobby closure,
   targeted photo deletion, and room shutdown.
 - [ ] A real-browser room-abandonment rehearsal returns cleanly to host setup
@@ -93,7 +96,7 @@ external approval is implied by local verification.
 - [ ] Cloudflare production deployment is explicitly approved.
 - [ ] Production environment and Durable Object migrations are verified.
 - [ ] Custom domain and TLS are configured and verified.
-- [ ] Physical phone/tablet, shared Chromebook, keyboard, screen-reader, school
+- [ ] Physical phone/tablet, shared-device, keyboard, screen-reader, target
   network/NAT, and organization-approval rehearsals are recorded.
 - [ ] `npm run verify:deployment -- https://YOUR-DOMAIN` confirms the expected
   live build identity, public-configuration fingerprint, Cloudflare deployment

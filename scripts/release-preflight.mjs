@@ -154,7 +154,7 @@ try {
     "--tag",
     sourceMetadata.releaseId,
     "--message",
-    `Scavenger Blackout ${sourceMetadata.releaseId}`,
+    `Rally Hunt ${sourceMetadata.releaseId}`,
     "--outdir",
     dryRunDirectory,
   ]);

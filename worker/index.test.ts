@@ -976,16 +976,27 @@ describe("Cloudflare game room", () => {
     expect((await getWebSocket("/api/games/LIMITS-TEST/ws", hostCookie)).status)
       .toBe(429);
 
-    for (let index = 0; index < 180; index += 1) {
-      const response = await postJson("/api/games/LIMITS-TEST/actions", hostCookie, {
-        action: "updateGame",
-        payload: {
-          gameId: state.game.id,
-          patch: { lobbyOpen: index % 2 === 0 },
-        },
-      });
-      expect(response.status).toBe(200);
-    }
+    expect((await postJson("/api/games/LIMITS-TEST/actions", hostCookie, {
+      action: "updateGame",
+      payload: {
+        gameId: state.game.id,
+        patch: { lobbyOpen: true },
+      },
+    })).status).toBe(200);
+
+    // The HTTP action above proves a normal mutation succeeds. Prime the
+    // remaining limiter entries directly so this rate-limit test does not
+    // spend several seconds rewriting the full room state 180 times.
+    const roomStub = env.GAME_ROOMS.get(env.GAME_ROOMS.idFromName("LIMITS-TEST"));
+    await runInDurableObject(roomStub, async (instance) => {
+      const room = instance as unknown as {
+        recordMutation(sessionId: string): void;
+      };
+      for (let index = 0; index < 179; index += 1) {
+        room.recordMutation("limits-host-session-000000001");
+      }
+    });
+
     expect((await postJson("/api/games/LIMITS-TEST/actions", hostCookie, {
       action: "updateGame",
       payload: {
@@ -1268,10 +1279,10 @@ describe("Cloudflare game room", () => {
       });
 
       const expiryWarnings = warning.mock.calls.filter(
-        ([message]) => message === "Scavenger Bingo operational event",
+        ([message]) => message === "Rally Hunt operational event",
       );
       expect(expiryWarnings).toContainEqual([
-        "Scavenger Bingo operational event",
+        "Rally Hunt operational event",
         {
           event: "room_expiry_registry_release_failed",
           localCleanupContinued: true,

@@ -1,6 +1,6 @@
-# Scavenger Blackout
+# Rally Hunt
 
-Scavenger Blackout is a temporary, mobile-first scavenger-hunt game that anyone
+Rally Hunt is a temporary, mobile-first scavenger-hunt game that anyone
 can host for friends, family, a class, a workplace, or another group. A React
 client and Cloudflare Worker with Static Assets ship together; each live room
 uses a Durable Object and expires after seven days. This is the sole current
@@ -54,6 +54,7 @@ requires the explicitly approved 32-character account identifier in
 - [Operations and incident runbook](OPERATIONS.md)
 - [Pilot rehearsal record](PILOT_REHEARSAL.md)
 - [Release checklist](RELEASE_CHECKLIST.md)
+- [Current release candidate status](RELEASE_STATUS_2026-07-31.md)
 - [Security reporting](SECURITY.md)
 - [Cloudflare setup](CLOUDFLARE_SETUP.md)
 

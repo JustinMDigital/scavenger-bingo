@@ -1,6 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = "http://127.0.0.1:4175";
+const e2ePort = process.env.SCAVENGER_E2E_PORT?.trim() || "4175";
+const e2ePortNumber = Number(e2ePort);
+if (
+  !/^\d{2,5}$/.test(e2ePort) ||
+  !Number.isInteger(e2ePortNumber) ||
+  e2ePortNumber < 1024 ||
+  e2ePortNumber > 65535
+) {
+  throw new Error("SCAVENGER_E2E_PORT must be a valid TCP port number.");
+}
+const baseURL = `http://127.0.0.1:${e2ePort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -36,7 +46,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev:e2e",
+    command: `npm run dev:e2e -- --port ${e2ePort}`,
     env: {
       SCAVENGER_E2E: "1",
       VITE_SUPPORT_EMAIL: "release-test@example.com",

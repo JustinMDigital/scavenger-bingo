@@ -73,7 +73,7 @@ test("one host and two independent players can start and update a hunt", async (
     await test.step("the host starts play and both boards reveal live", async () => {
       await hostPage.getByRole("button", { name: "Start game" }).click();
       await expect(
-        hostPage.getByRole("heading", { name: "Classroom Scavenger Bingo" }),
+        hostPage.getByRole("heading", { name: "Classroom Rally" }),
       ).toBeVisible();
 
       await Promise.all([

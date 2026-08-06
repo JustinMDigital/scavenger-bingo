@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   resolvePublicConfigFingerprint,
   resolveReleaseMetadata,
@@ -103,6 +105,46 @@ test("read-only CI pins official actions and does not persist checkout credentia
   assert.match(workflow, /actions\/upload-artifact@[0-9a-f]{40}/);
   assert.match(workflow, /npm audit --audit-level=high/);
   assert.doesNotMatch(workflow, /npm audit[^\n]*--omit=dev/);
+  assert.match(workflow, /VITE_SUPPORT_EMAIL:\s*release-test@example\.test/);
+  assert.match(
+    workflow,
+    /VITE_GOOGLE_CLIENT_ID:\s*[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com/,
+  );
+  assert.match(workflow, /run:\s*npm run build:release/);
+});
+
+test("release builds reject missing or placeholder public configuration", () => {
+  const scriptPath = fileURLToPath(
+    new URL("./verify-release-contact.mjs", import.meta.url),
+  );
+  const run = (supportEmail, googleClientId) =>
+    spawnSync(process.execPath, [scriptPath], {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        VITE_SUPPORT_EMAIL: supportEmail,
+        VITE_GOOGLE_CLIENT_ID: googleClientId,
+      },
+    });
+
+  const missing = run("", "");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /set VITE_SUPPORT_EMAIL/);
+
+  const placeholder = run(
+    "release-test@example.test",
+    "your-google-oauth-web-client-id.apps.googleusercontent.com",
+  );
+  assert.equal(placeholder.status, 1);
+  assert.match(placeholder.stderr, /set VITE_GOOGLE_CLIENT_ID/);
+
+  const valid = run(
+    "release-test@example.test",
+    "123456789-release.apps.googleusercontent.com",
+  );
+  assert.equal(valid.status, 0);
+  assert.match(valid.stdout, /Google OAuth client configuration verified/);
 });
 
 test("deployment is bound to an explicit account and the verified build manifest", () => {
@@ -125,4 +167,10 @@ test("deployment is bound to an explicit account and the verified build manifest
     preflightScript,
     /Source or public release configuration changed during preflight/,
   );
+
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.match(packageJson.scripts["build:release"], /check:release-contact/);
+  assert.match(packageJson.scripts["build:release"], /check:release-metadata/);
 });

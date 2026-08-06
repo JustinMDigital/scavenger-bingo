@@ -1,5 +1,5 @@
 {
-  "name": "scavenger-bingo",
+  "name": "rally-hunt",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -17,6 +17,7 @@
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:e2e": "playwright test",
     "check:release-contact": "node scripts/verify-release-contact.mjs",
+    "build:release": "npm run check:release-contact && npm run build && npm run check:release-metadata",
     "check:release-metadata": "node scripts/verify-build-metadata.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
     "verify:deployment": "node scripts/verify-deployment.mjs",

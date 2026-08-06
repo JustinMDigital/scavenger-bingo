@@ -43,7 +43,7 @@ run(npxCommand, [
   "--tag",
   manifest.releaseId,
   "--message",
-  `Scavenger Blackout ${manifest.releaseId}`,
+  `Rally Hunt ${manifest.releaseId}`,
 ]);
 run(nodeCommand, [
   resolve(root, "scripts/verify-deployment.mjs"),

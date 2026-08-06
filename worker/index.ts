@@ -1730,7 +1730,7 @@ function warnOperationalEvent(
   event: string,
   details: Record<string, string | number | boolean>,
 ) {
-  console.warn("Scavenger Bingo operational event", {
+  console.warn("Rally Hunt operational event", {
     event,
     ...details,
   });

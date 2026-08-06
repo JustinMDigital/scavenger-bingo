@@ -9,15 +9,16 @@ const POWERPOINT_MIME_TYPE =
 const SLIDE_WIDTH = 13.333;
 const SLIDE_HEIGHT = 7.5;
 const COLORS = {
-  accent: "5B4FC7",
-  accentDark: "30296F",
-  accentSoft: "EEECFF",
-  background: "F7F8FC",
-  border: "D9DCE8",
+  accent: "C8320D",
+  accentDark: "7A240F",
+  accentSoft: "FFE0CF",
+  background: "F8F3E8",
+  border: "D8D1C1",
   danger: "B83A55",
   dangerSoft: "FDECF0",
-  ink: "202235",
-  muted: "686B7E",
+  field: "153C31",
+  ink: "133A30",
+  muted: "52645B",
   pending: "267357",
   pendingSoft: "E4F6EE",
   success: "267357",
@@ -347,7 +348,7 @@ export async function createPlayerSlidesDeck({
       await waitForPaint();
       const { toPng } = await import("html-to-image");
       boardImage = await toPng(boardElement, {
-        backgroundColor: "#f7f8fc",
+        backgroundColor: "#f8f3e8",
         cacheBust: true,
         height: 900,
         pixelRatio: 1.5,
@@ -363,8 +364,8 @@ export async function createPlayerSlidesDeck({
   const { default: PptxGenJSClass } = await import("pptxgenjs");
   const pptx = new PptxGenJSClass();
   pptx.layout = "LAYOUT_WIDE";
-  pptx.author = "Scavenger Bingo";
-  pptx.company = "Scavenger Bingo";
+  pptx.author = "Rally Hunt";
+  pptx.company = "Rally Hunt";
   pptx.subject = `${model.groupName} game board export`;
   pptx.title = model.fileName.replace(/\.pptx$/i, "");
   pptx.theme = {
@@ -473,8 +474,47 @@ function addTitleSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
     fill: { color: COLORS.accent },
     line: { color: COLORS.accent },
   });
-  slide.addText("SCAVENGER BINGO", {
+  slide.addShape(pptx.ShapeType.roundRect, {
     x: 0.72,
+    y: 0.46,
+    w: 0.48,
+    h: 0.48,
+    rectRadius: 0.06,
+    fill: { color: COLORS.field },
+    line: { color: COLORS.field },
+  });
+  slide.addShape(pptx.ShapeType.ellipse, {
+    x: 0.8,
+    y: 0.76,
+    w: 0.07,
+    h: 0.07,
+    fill: { color: COLORS.accentSoft },
+    line: { color: COLORS.accentSoft },
+  });
+  slide.addShape(pptx.ShapeType.line, {
+    x: 0.85,
+    y: 0.78,
+    w: 0.17,
+    h: -0.16,
+    line: { color: COLORS.accentSoft, width: 2.5, beginArrowType: "none", endArrowType: "none" },
+  });
+  slide.addShape(pptx.ShapeType.line, {
+    x: 1.02,
+    y: 0.56,
+    w: 0,
+    h: 0.24,
+    line: { color: COLORS.white, width: 2, beginArrowType: "none", endArrowType: "none" },
+  });
+  slide.addShape(pptx.ShapeType.rect, {
+    x: 1.03,
+    y: 0.57,
+    w: 0.1,
+    h: 0.08,
+    fill: { color: COLORS.white },
+    line: { color: COLORS.white },
+  });
+  slide.addText("RALLY HUNT", {
+    x: 1.34,
     y: 0.58,
     w: 4,
     h: 0.28,

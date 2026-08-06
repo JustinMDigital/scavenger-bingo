@@ -326,7 +326,7 @@ async function fetchURL(path) {
         headers: {
           accept: "application/json,text/html;q=0.9",
           "cache-control": "no-cache",
-          "user-agent": "ScavengerBlackout-ReadOnlyReleaseVerifier/1",
+          "user-agent": "RallyHunt-ReadOnlyReleaseVerifier/1",
         },
         redirect: "follow",
         signal: AbortSignal.timeout(15_000),

@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  ArrowRight,
   Armchair,
   Badge,
   Bike,
@@ -240,6 +241,28 @@ const PROOF_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
+
+function RallyMark({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M7 24.5c0-3.7 2.8-5.1 6-6.2 3.6-1.2 6-2.7 6-7.3"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+      <circle cx="7" cy="24.5" r="2.5" fill="currentColor" />
+      <path d="M19 5v15" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+      <path d="M20.5 6h7l-2.1 3.5 2.1 3.5h-7V6Z" fill="currentColor" />
+    </svg>
+  );
+}
 const PROOF_IMAGE_ACCEPT =
   "image/heic,image/heif,image/jpeg,image/png,image/webp,.heic,.heif,.jpeg,.jpg,.png,.webp";
 const PROOF_RESIZED_IMAGE_TYPE = "image/jpeg";
@@ -1973,12 +1996,12 @@ export default function App() {
   }
 
   const cssVars = {
-    "--primary": isHostRoute ? "oklch(0.49 0.22 262)" : currentGroup?.color,
+    "--primary": isHostRoute ? "oklch(0.5 0.18 34)" : currentGroup?.color,
     "--primary-dark": isHostRoute
-      ? "oklch(0.38 0.18 262)"
+      ? "oklch(0.37 0.135 31)"
       : currentGroup?.dark,
     "--primary-soft": isHostRoute
-      ? "oklch(0.94 0.035 262)"
+      ? "oklch(0.94 0.05 48)"
       : currentGroup?.soft,
     "--group-color": currentGroup?.color,
   } as React.CSSProperties;
@@ -2379,7 +2402,7 @@ function LoadingView({
     <main className="main-content">
       <section className="welcome-card" aria-label="Loading game">
         <div>
-          <p className="label">Scavenger Blackout</p>
+          <p className="label">Rally Hunt</p>
           <h1>{roomCode ? `Loading ${roomCode}...` : "Loading game..."}</h1>
           <p>
             {isSlowLoad
@@ -2422,11 +2445,11 @@ function HostSetupView({
 }) {
   return (
     <main className="entry-page host-entry-page">
-      <a className="entry-brand" href="/" aria-label="Scavenger Blackout home">
+      <a className="entry-brand" href="/" aria-label="Rally Hunt home">
         <span className="entry-brand-mark" aria-hidden="true">
-          <Grid3X3 />
+          <RallyMark />
         </span>
-        <span>Scavenger Blackout</span>
+        <span>Rally Hunt</span>
       </a>
       {statusMessage && (
         <div className="toast-region" role="status" aria-live="polite">
@@ -2477,11 +2500,11 @@ function GameCodeGate({
 
   return (
     <main className="landing-page">
-      <a className="landing-brand" href="/" aria-label="Scavenger Blackout home">
+      <a className="landing-brand" href="/" aria-label="Rally Hunt home">
         <span className="landing-brand-mark" aria-hidden="true">
-          <Grid3X3 />
+          <RallyMark />
         </span>
-        <span>Scavenger Blackout</span>
+        <span>Rally Hunt</span>
       </a>
 
       <section className="landing-hero" aria-labelledby="game-code-title">
@@ -2534,11 +2557,11 @@ function GameCodeGate({
         <div className="landing-host-actions">
           <a className="landing-template-link" href="/templates">
             <Grid3X3 aria-hidden="true" />
-            Browse templates
+            Choose a ready-made game
           </a>
           <a className="landing-host-link" href="/host">
             <Plus aria-hidden="true" />
-            Create blank
+            Build from scratch
           </a>
         </div>
       </section>
@@ -2558,6 +2581,245 @@ function SiteFooter() {
   );
 }
 
+type TemplateLibraryContext = {
+  canApply: boolean;
+  gameCode: string;
+  onApply: (templateId: GameKit["id"]) => void;
+};
+
+type TemplateFilterId =
+  | "all"
+  | "quick"
+  | "kids"
+  | "celebration"
+  | "work"
+  | "outdoors"
+  | "solo";
+
+const TEMPLATE_FILTERS: ReadonlyArray<{
+  id: TemplateFilterId;
+  label: string;
+  matches: (template: GameKit) => boolean;
+}> = [
+  { id: "all", label: "All games", matches: () => true },
+  {
+    id: "quick",
+    label: "Quick & easy",
+    matches: (template) =>
+      template.durationLabel === "30 min" ||
+      template.searchTags.some((tag) => tag === "quick" || tag === "easy"),
+  },
+  {
+    id: "kids",
+    label: "Kids & family",
+    matches: (template) =>
+      template.category === "Family" ||
+      template.category === "Schools" ||
+      template.ageLabel === "Kids and families",
+  },
+  {
+    id: "celebration",
+    label: "Celebrations",
+    matches: (template) => template.category === "Celebration",
+  },
+  {
+    id: "work",
+    label: "Work groups",
+    matches: (template) => template.category === "Work",
+  },
+  {
+    id: "outdoors",
+    label: "Outdoors",
+    matches: (template) => template.category === "Outdoors",
+  },
+  {
+    id: "solo",
+    label: "Solo play",
+    matches: (template) => template.playMode === "individual",
+  },
+];
+
+const TEMPLATE_RECOMMENDATIONS: Record<TemplateFilterId, GameKit["id"]> = {
+  all: "quick",
+  quick: "quick",
+  kids: "kids-indoor",
+  celebration: "birthday-party",
+  work: "new-team-welcome",
+  outdoors: "park-playground",
+  solo: "solo-photo-walk",
+};
+
+function getTemplateBrowsePath(
+  path: string,
+  query: string,
+  activeFilter: TemplateFilterId,
+) {
+  const url = new URL(path, window.location.origin);
+  const cleanQuery = query.trim();
+
+  if (cleanQuery) url.searchParams.set("q", cleanQuery);
+  else url.searchParams.delete("q");
+
+  if (activeFilter !== "all") url.searchParams.set("filter", activeFilter);
+  else url.searchParams.delete("filter");
+
+  return `${url.pathname}${url.search}`;
+}
+
+function getTemplateDetailPath(
+  catalogPath: string,
+  templateId: GameKit["id"],
+  query: string,
+  activeFilter: TemplateFilterId,
+) {
+  const url = new URL(catalogPath, window.location.origin);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/${templateId}`;
+  return getTemplateBrowsePath(`${url.pathname}${url.search}`, query, activeFilter);
+}
+
+function readTemplateFilterFromUrl(): TemplateFilterId {
+  const value = new URLSearchParams(window.location.search).get("filter");
+  return TEMPLATE_FILTERS.some((filter) => filter.id === value)
+    ? value as TemplateFilterId
+    : "all";
+}
+
+const TEMPLATE_ICONS: Record<GameKit["id"], LucideIcon> = {
+  classroom: School,
+  quick: Dices,
+  "at-home-adventure": Armchair,
+  "free-for-all": Trophy,
+  "birthday-party": Ticket,
+  "holiday-dinner": UtensilsCrossed,
+  "city-explorer": Landmark,
+  "neighborhood-stroll": Route,
+  "park-playground": Trees,
+  "office-team-building": HeartHandshake,
+  "new-team-welcome": Users,
+  "kids-indoor": Smile,
+  "solo-photo-walk": Camera,
+};
+
+const HOST_STARTER_TEMPLATES = ["quick", "classroom", "birthday-party"]
+  .map((templateId) => getGameKit(templateId))
+  .filter((template): template is GameKit => Boolean(template));
+
+function getTemplateProofLabel(template: GameKit) {
+  if (template.proofMode === "none") return "No photos";
+  if (template.proofMode === "optional") return "Photos optional";
+  return template.approvalMode === "host" ? "Host reviews photos" : "Photo proof";
+}
+
+function getTemplatePhotoDetail(template: GameKit) {
+  if (template.proofMode === "none") return "No uploads";
+  if (template.proofMode === "optional") {
+    return template.approvalMode === "host"
+      ? "Optional · host review"
+      : "Optional · automatic";
+  }
+  return template.approvalMode === "host"
+    ? "Required · host review"
+    : "Required · automatic";
+}
+
+function TemplateStartAction({
+  className,
+  context,
+  template,
+}: {
+  className: string;
+  context?: TemplateLibraryContext;
+  template: GameKit;
+}) {
+  if (context?.canApply) {
+    return (
+      <button
+        aria-label={`Use ${template.name} in this room`}
+        className={className}
+        type="button"
+        onClick={() => context.onApply(template.id)}
+      >
+        <Play aria-hidden="true" />
+        Use in this room
+      </button>
+    );
+  }
+
+  return (
+    <a
+      aria-label={`Start ${template.name}${context ? " in a new room" : ""}`}
+      className={className}
+      href={`/host?template=${encodeURIComponent(template.id)}`}
+    >
+      <Play aria-hidden="true" />
+      {context ? "Start in a new room" : "Start this game"}
+    </a>
+  );
+}
+
+function TemplateCatalogCard({
+  activeFilter,
+  catalogPath,
+  context,
+  query,
+  template,
+}: {
+  activeFilter: TemplateFilterId;
+  catalogPath: string;
+  context?: TemplateLibraryContext;
+  query: string;
+  template: GameKit;
+}) {
+  const Icon = TEMPLATE_ICONS[template.id];
+  const detailPath = getTemplateDetailPath(
+    catalogPath,
+    template.id,
+    query,
+    activeFilter,
+  );
+
+  return (
+    <article
+      className="template-catalog-card"
+      data-template={template.id}
+      aria-labelledby={`template-${template.id}-title`}
+    >
+      <div className="template-card-visual" aria-hidden="true">
+        <span><Icon /></span>
+        <small>{template.setting}</small>
+      </div>
+      <div className="template-card-copy">
+        <div className="template-card-topline">
+          <span>{template.category}</span>
+          {template.featured && <em>Featured</em>}
+        </div>
+        <h2 id={`template-${template.id}-title`}>{template.name}</h2>
+        <p>{template.summary}</p>
+        <div className="template-card-facts" aria-label="At a glance">
+          <span>{template.playMode === "individual" ? "Solo boards" : template.playerLabel}</span>
+          <span>{template.durationLabel}</span>
+          <span>{template.boardSize}×{template.boardSize} {template.winCondition}</span>
+          <span>{getTemplateProofLabel(template)}</span>
+        </div>
+        <div className="template-card-actions">
+          <TemplateStartAction
+            className="template-card-use"
+            context={context}
+            template={template}
+          />
+          <a
+            aria-label={`See what is inside ${template.name}`}
+            className="template-card-preview"
+            href={detailPath}
+          >
+            See what’s inside
+          </a>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 type InformationPageKind = "privacy" | "terms" | "support";
 
 function InformationPage({ kind }: { kind: InformationPageKind }) {
@@ -2569,7 +2831,7 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `${pageTitle} | Scavenger Blackout`;
+    document.title = `${pageTitle} | Rally Hunt`;
     return () => {
       document.title = previousTitle;
     };
@@ -2577,16 +2839,16 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
 
   return (
     <main className="information-page">
-      <a className="entry-brand" href="/" aria-label="Scavenger Blackout home">
-        <span className="entry-brand-mark" aria-hidden="true"><Grid3X3 /></span>
-        <span>Scavenger Blackout</span>
+      <a className="entry-brand" href="/" aria-label="Rally Hunt home">
+        <span className="entry-brand-mark" aria-hidden="true"><RallyMark /></span>
+        <span>Rally Hunt</span>
       </a>
       {kind === "privacy" ? (
         <article aria-labelledby="privacy-title">
           <p className="label">Plain-language notice</p>
           <h1 id="privacy-title">Privacy</h1>
           <p>
-            Scavenger Blackout is a temporary scavenger-hunt game for friends,
+            Rally Hunt is a temporary scavenger-hunt game for friends,
             families, classrooms, workplaces, and other groups. It has no advertising,
             behavioral analytics, permanent player accounts, or sale of personal
             information.
@@ -2767,7 +3029,7 @@ function InformationPage({ kind }: { kind: InformationPageKind }) {
               </>
             ) : (
               <>
-                For a pilot, contact the person who supplied the Scavenger Blackout link
+                For a pilot, contact the person who supplied the Rally Hunt link
                 and include the room code, approximate time, device/browser, and what
                 happened. A monitored public support address is required before broad
                 self-service release.
@@ -2792,15 +3054,15 @@ function TemplateLibraryPage({
   context,
   route,
 }: {
-  context?: {
-    canApply: boolean;
-    gameCode: string;
-    onApply: (templateId: GameKit["id"]) => void;
-  };
+  context?: TemplateLibraryContext;
   route: TemplateRoute;
 }) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("All");
+  const [query, setQuery] = useState(
+    () => new URLSearchParams(window.location.search).get("q") ?? "",
+  );
+  const [activeFilter, setActiveFilter] = useState<TemplateFilterId>(
+    readTemplateFilterFromUrl,
+  );
   const catalogPath = context
     ? getPathWithGameCode("/host/templates", context.gameCode)
     : "/templates";
@@ -2810,24 +3072,31 @@ function TemplateLibraryPage({
   const selectedTemplate = route.templateId
     ? getGameKit(route.templateId)
     : undefined;
+  const catalogBrowsePath = getTemplateBrowsePath(catalogPath, query, activeFilter);
+
+  function updateBrowseState(nextQuery: string, nextFilter: TemplateFilterId) {
+    const nextPath = getTemplateBrowsePath(
+      window.location.pathname,
+      nextQuery,
+      nextFilter,
+    );
+    window.history.replaceState(window.history.state, "", nextPath);
+  }
 
   if (route.templateId) {
     return (
       <TemplateDetailPage
-        catalogPath={catalogPath}
+        catalogPath={catalogBrowsePath}
         context={context}
         template={selectedTemplate}
       />
     );
   }
 
-  const categories = [
-    "All",
-    ...Array.from(new Set(GAME_KITS.map((kit) => kit.category))),
-  ];
   const normalizedQuery = query.trim().toLowerCase();
+  const selectedFilter =
+    TEMPLATE_FILTERS.find((filter) => filter.id === activeFilter) ?? TEMPLATE_FILTERS[0];
   const filteredTemplates = GAME_KITS.filter((kit) => {
-    const matchesCategory = category === "All" || kit.category === category;
     const searchableText = [
       kit.name,
       kit.gameName,
@@ -2841,8 +3110,32 @@ function TemplateLibraryPage({
       .join(" ")
       .toLowerCase();
 
-    return matchesCategory && (!normalizedQuery || searchableText.includes(normalizedQuery));
+    return (
+      selectedFilter.matches(kit) &&
+      (!normalizedQuery || searchableText.includes(normalizedQuery))
+    );
   });
+  const preferredRecommendation = getGameKit(
+    TEMPLATE_RECOMMENDATIONS[activeFilter],
+  );
+  const recommendedTemplate = normalizedQuery
+    ? filteredTemplates[0]
+    : preferredRecommendation && filteredTemplates.some(
+        (template) => template.id === preferredRecommendation.id,
+      )
+      ? preferredRecommendation
+      : filteredTemplates[0];
+  const RecommendedIcon = recommendedTemplate
+    ? TEMPLATE_ICONS[recommendedTemplate.id]
+    : Dices;
+  const catalogTemplates = recommendedTemplate
+    ? filteredTemplates.filter((template) => template.id !== recommendedTemplate.id)
+    : [];
+  const recommendationLabel = normalizedQuery
+    ? "Best search match"
+    : activeFilter === "all"
+      ? "Best place to start"
+      : `Best match for ${selectedFilter.label.toLowerCase()}`;
 
   return (
     <main className="template-library-page">
@@ -2852,95 +3145,144 @@ function TemplateLibraryPage({
           {context ? `Back to room ${context.gameCode}` : "Back home"}
         </a>
         <a className="template-library-brand" href="/">
-          <span aria-hidden="true"><Grid3X3 /></span>
-          Scavenger Blackout
+          <span aria-hidden="true"><RallyMark /></span>
+          Rally Hunt
         </a>
       </header>
 
       <section className="template-library-hero" aria-labelledby="template-library-title">
-        <p className="label">{context ? "Choose for this room" : "Game templates"}</p>
-        <h1 id="template-library-title">Pick a hunt that fits the moment.</h1>
+        <p className="label">{context ? "Choose for this room" : "Ready-made games"}</p>
+        <h1 id="template-library-title">Start with a game that already fits.</h1>
         <p>
-          Preview the tasks and rules first. Every template becomes an editable
-          copy in your room.
+          Choose what sounds right, start it in a few clicks, and change anything
+          you want before people join.
         </p>
       </section>
 
       <section className="template-library-tools" aria-label="Find a template">
+        <div className="template-tool-heading">
+          <strong>What are you planning?</strong>
+          <span>Pick a shortcut or search the whole library.</span>
+        </div>
+        <div className="template-categories" aria-label="Browse by type">
+          {TEMPLATE_FILTERS.map((filter) => (
+            <button
+              key={filter.id}
+              aria-pressed={activeFilter === filter.id}
+              className={activeFilter === filter.id ? "is-active" : ""}
+              type="button"
+              onClick={() => {
+                setActiveFilter(filter.id);
+                updateBrowseState(query, filter.id);
+              }}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
         <label className="template-search">
           <Search aria-hidden="true" />
           <span className="sr-only">Search templates</span>
           <input
             type="search"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              const nextQuery = event.target.value;
+              setQuery(nextQuery);
+              updateBrowseState(nextQuery, activeFilter);
+            }}
             placeholder="Search by occasion, place, or group"
           />
         </label>
-        <div className="template-categories" aria-label="Template categories">
-          {categories.map((item) => (
-            <button
-              key={item}
-              aria-pressed={category === item}
-              className={category === item ? "is-active" : ""}
-              type="button"
-              onClick={() => setCategory(item)}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
       </section>
 
-      <section aria-live="polite" aria-label="Template results">
+      {recommendedTemplate && (
+        <section
+          className="template-recommendation"
+          data-template={recommendedTemplate.id}
+          aria-labelledby="template-recommendation-title"
+        >
+          <div className="template-recommendation-visual" aria-hidden="true">
+            <RecommendedIcon />
+            <span>{recommendedTemplate.boardSize}×{recommendedTemplate.boardSize}</span>
+          </div>
+          <div className="template-recommendation-copy">
+            <p className="label">{recommendationLabel}</p>
+            <h2 id="template-recommendation-title">{recommendedTemplate.name}</h2>
+            <p>{recommendedTemplate.summary}</p>
+            <div
+              className="template-recommendation-facts"
+              aria-label={`${recommendedTemplate.name} at a glance`}
+            >
+              <span>
+                {recommendedTemplate.playMode === "individual"
+                  ? "Solo boards"
+                  : recommendedTemplate.playerLabel}
+              </span>
+              <span>{recommendedTemplate.durationLabel}</span>
+              <span>
+                {recommendedTemplate.boardSize}×{recommendedTemplate.boardSize}{" "}
+                {recommendedTemplate.winCondition}
+              </span>
+              <span>{getTemplateProofLabel(recommendedTemplate)}</span>
+            </div>
+            <div className="template-recommendation-actions">
+              <TemplateStartAction
+                className="template-recommendation-use"
+                context={context}
+                template={recommendedTemplate}
+              />
+              <a
+                aria-label={`See what is inside ${recommendedTemplate.name}`}
+                href={getTemplateDetailPath(
+                  catalogPath,
+                  recommendedTemplate.id,
+                  query,
+                  activeFilter,
+                )}
+              >
+                See what’s inside
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section aria-label="Template results">
         <div className="template-results-heading">
-          <strong>
+          <div>
+            <span className="label">
+              {activeFilter === "all" && !normalizedQuery
+                ? "More ways to play"
+                : "Other good fits"}
+            </span>
+            <strong>
+              {activeFilter === "all" && !normalizedQuery
+                ? "More ready-made games"
+                : selectedFilter.label}
+            </strong>
+          </div>
+          <span aria-atomic="true" aria-live="polite" role="status">
             {filteredTemplates.length === 1
-              ? "1 template"
-              : `${filteredTemplates.length} templates`}
-          </strong>
-          <span>{query ? `Matching “${query.trim()}”` : "Curated and ready to edit"}</span>
+              ? "1 match"
+              : `${filteredTemplates.length} matches`}
+          </span>
         </div>
 
-        {filteredTemplates.length > 0 ? (
+        {catalogTemplates.length > 0 ? (
           <div className="template-catalog-grid">
-            {filteredTemplates.map((kit) => {
-              const detailPath = context
-                ? getPathWithGameCode(`/host/templates/${kit.id}`, context.gameCode)
-                : `/templates/${kit.id}`;
-
-              return (
-                <a
-                  className={kit.featured ? "template-catalog-card is-featured" : "template-catalog-card"}
-                  href={detailPath}
-                  key={kit.id}
-                >
-                  <div className="template-card-board" aria-hidden="true">
-                    {Array.from({ length: 9 }, (_, index) => (
-                      <span key={index}>
-                        {index === 4 ? <Star /> : <Grid3X3 />}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="template-card-copy">
-                    <div className="template-card-topline">
-                      <span>{kit.category}</span>
-                      {kit.featured && <em>Featured</em>}
-                    </div>
-                    <h2>{kit.name}</h2>
-                    <p>{kit.summary}</p>
-                    <div className="template-card-facts">
-                      <span>{kit.playerLabel}</span>
-                      <span>{kit.durationLabel}</span>
-                      <span>{kit.boardSize}×{kit.boardSize}</span>
-                    </div>
-                  </div>
-                  <span className="template-card-open">Open template</span>
-                </a>
-              );
-            })}
+            {catalogTemplates.map((template) => (
+              <TemplateCatalogCard
+                activeFilter={activeFilter}
+                catalogPath={catalogPath}
+                context={context}
+                key={template.id}
+                query={query}
+                template={template}
+              />
+            ))}
           </div>
-        ) : (
+        ) : filteredTemplates.length === 0 ? (
           <div className="template-empty-state">
             <Search aria-hidden="true" />
             <strong>No templates match that search.</strong>
@@ -2948,13 +3290,31 @@ function TemplateLibraryPage({
               type="button"
               onClick={() => {
                 setQuery("");
-                setCategory("All");
+                setActiveFilter("all");
+                updateBrowseState("", "all");
               }}
             >
               Clear filters
             </button>
           </div>
-        )}
+        ) : null}
+      </section>
+
+      <section className="template-build-own" aria-label="Create a custom game">
+        <div>
+          <strong>
+            {context ? "Keep your current setup" : "Need something different?"}
+          </strong>
+          <span>
+            {context
+              ? "Go back without replacing this room’s rules, teams, or tasks."
+              : "Start blank and choose every rule, team, and challenge yourself."}
+          </span>
+        </div>
+        <a href={context ? backPath : "/host"}>
+          {context ? `Back to room ${context.gameCode}` : "Build your own game"}
+          <ArrowRight aria-hidden="true" />
+        </a>
       </section>
     </main>
   );
@@ -2973,6 +3333,12 @@ function TemplateDetailPage({
   };
   template?: GameKit;
 }) {
+  const [showAllTasks, setShowAllTasks] = useState(false);
+
+  useEffect(() => {
+    setShowAllTasks(false);
+  }, [template?.id]);
+
   if (!template) {
     return (
       <main className="template-library-page">
@@ -2994,6 +3360,10 @@ function TemplateDetailPage({
 
   const taskCount = template.tasks?.length ?? 42;
   const creationHref = `/host?template=${encodeURIComponent(template.id)}`;
+  const visibleTasks = template.tasks?.slice(
+    0,
+    showAllTasks ? template.tasks.length : 12,
+  );
 
   return (
     <main className="template-library-page template-detail-page">
@@ -3003,8 +3373,8 @@ function TemplateDetailPage({
           All templates
         </a>
         <a className="template-library-brand" href="/">
-          <span aria-hidden="true"><Grid3X3 /></span>
-          Scavenger Blackout
+          <span aria-hidden="true"><RallyMark /></span>
+          Rally Hunt
         </a>
       </header>
 
@@ -3070,6 +3440,7 @@ function TemplateDetailPage({
         <div><span>Setting</span><strong>{template.setting}</strong></div>
         <div><span>Best for</span><strong>{template.ageLabel}</strong></div>
         <div><span>Board</span><strong>{template.boardSize}×{template.boardSize} {template.winCondition}</strong></div>
+        <div><span>Photos</span><strong>{getTemplatePhotoDetail(template)}</strong></div>
         <div><span>Task pool</span><strong>{taskCount} editable tasks</strong></div>
       </section>
 
@@ -3083,9 +3454,10 @@ function TemplateDetailPage({
               : "This flexible template starts with the full 42-task general challenge pool, ready to edit in room setup."}
           </p>
         </div>
-        {template.tasks ? (
-          <div className="template-task-list">
-            {template.tasks.map((task) => {
+        {visibleTasks ? (
+          <div className="template-task-list-wrap">
+            <div className="template-task-list">
+            {visibleTasks.map((task) => {
               const Icon = ICONS[task.icon] ?? Grid3X3;
               return (
                 <article key={task.id}>
@@ -3098,6 +3470,18 @@ function TemplateDetailPage({
                 </article>
               );
             })}
+            </div>
+            {template.tasks && template.tasks.length > 12 && (
+              <button
+                className="template-task-toggle"
+                type="button"
+                onClick={() => setShowAllTasks((current) => !current)}
+              >
+                {showAllTasks
+                  ? "Show fewer tasks"
+                  : `Show all ${template.tasks.length} tasks`}
+              </button>
+            )}
           </div>
         ) : (
           <div className="template-generic-pool">
@@ -3177,7 +3561,7 @@ function SiteHeader({
           )}
           <span className="room-code-kicker">Room {roomCode}</span>
         </p>
-        <h1>Scavenger Blackout</h1>
+        <h1>Rally Hunt</h1>
       </div>
       <button
         aria-expanded={showStopDetails}
@@ -3499,12 +3883,17 @@ export function HostGate({
 
       {selectedTemplate && (
         <div className="selected-template-summary">
-          <div>
+          <div className="selected-template-copy">
             <strong>{selectedTemplate.name}</strong>
             <span>{selectedTemplate.summary}</span>
           </div>
-          <span>{selectedTemplate.boardSize}×{selectedTemplate.boardSize}</span>
-          <span>{selectedTemplate.durationLabel}</span>
+          <div className="selected-template-facts" aria-label="Template at a glance">
+            <span>
+              {selectedTemplate.boardSize}×{selectedTemplate.boardSize} {selectedTemplate.winCondition}
+            </span>
+            <span>{selectedTemplate.durationLabel}</span>
+            <span>{getTemplateProofLabel(selectedTemplate)}</span>
+          </div>
         </div>
       )}
 
@@ -4290,6 +4679,9 @@ function HostView({
               game={game}
               boardsLocked={boardsLocked}
               browseTemplatesHref={getPathWithGameCode("/host/templates", game.code)}
+              hasExistingSetup={
+                tasks.length > 1 || groups.length > 0 || boardAssignments.length > 0
+              }
               onConfigure={configure}
               onNext={() => setSetupStep(game.playMode === "teams" ? "teams" : "boards")}
             />
@@ -4877,16 +5269,18 @@ function PlayerInviteCard({ gameCode }: { gameCode: string }) {
   );
 }
 
-function GameSettingsPanel({
+export function GameSettingsPanel({
   game,
   boardsLocked,
   browseTemplatesHref,
+  hasExistingSetup,
   onConfigure,
   onNext,
 }: {
   game: Game;
   boardsLocked: boolean;
   browseTemplatesHref: string;
+  hasExistingSetup: boolean;
   onConfigure: (
     template?: GameKitId,
     config?: Parameters<typeof configureGame>[0]["config"],
@@ -4906,6 +5300,7 @@ function GameSettingsPanel({
   });
   const [startTime, setStartTime] = useState("10:00 AM");
   const [isSaving, setIsSaving] = useState(false);
+  const [applyingTemplateId, setApplyingTemplateId] = useState<GameKit["id"] | null>(null);
   const [photoApprovalAcknowledged, setPhotoApprovalAcknowledged] = useState(false);
   const [playerExportApprovalAcknowledged, setPlayerExportApprovalAcknowledged] =
     useState(false);
@@ -4932,37 +5327,88 @@ function GameSettingsPanel({
     if (saved) onNext();
   }
 
+  async function applyStarterTemplate(templateId: GameKit["id"]) {
+    if (
+      hasExistingSetup &&
+      !window.confirm(
+        "Replace this room’s current rules, teams, tasks, and boards with this template? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+
+    setApplyingTemplateId(templateId);
+    const saved = await onConfigure(templateId);
+    setApplyingTemplateId(null);
+    if (saved) onNext();
+  }
+
   return (
     <section className="host-step-panel game-settings-panel" aria-labelledby="setup-game-heading">
       <div className="host-step-heading">
         <div>
           <p className="label">Step 1</p>
-          <h2 id="setup-game-heading">Set up the game</h2>
-          <p>Fine-tune this room here, or open the separate template library.</p>
+          <h2 id="setup-game-heading">Choose your game</h2>
+          <p>Start ready-made in one tap, or build the setup yourself.</p>
         </div>
         <span>{boardsLocked ? "Format locked" : "Flexible setup"}</span>
       </div>
 
-      <div className="template-library-entry">
-        <div>
-          <span aria-hidden="true"><Grid3X3 /></span>
+      {boardsLocked || game.setupComplete ? (
+        <div className="template-library-entry">
           <div>
-            <strong>Start with a ready-made hunt</strong>
-            <p>Search the library, preview every challenge, then bring one back to this room.</p>
+            <span aria-hidden="true"><Grid3X3 /></span>
+            <div>
+              <strong>Ready-made games</strong>
+              <p>This room’s setup is already locked in.</p>
+            </div>
+          </div>
+          <span className="template-library-entry-status">Start a new room to change templates</span>
+        </div>
+      ) : (
+        <div className="host-template-starters">
+          <div className="host-template-starters-heading">
+            <div>
+              <p className="label">Fastest setup</p>
+              <strong>Start with a ready-made game</strong>
+              <span>Rules, tasks, teams, and boards are included. You can edit them next.</span>
+            </div>
+            <a href={browseTemplatesHref}>See all templates</a>
+          </div>
+          <div className="host-template-starter-grid">
+            {HOST_STARTER_TEMPLATES.map((template) => {
+              const Icon = TEMPLATE_ICONS[template.id];
+              const isApplying = applyingTemplateId === template.id;
+              return (
+                <button
+                  key={template.id}
+                  className="host-template-starter"
+                  data-template={template.id}
+                  disabled={applyingTemplateId !== null}
+                  type="button"
+                  onClick={() => void applyStarterTemplate(template.id)}
+                >
+                  <span className="host-template-starter-icon" aria-hidden="true"><Icon /></span>
+                  <span className="host-template-starter-copy">
+                    <strong>{template.name}</strong>
+                    <small>
+                      {template.durationLabel} · {template.playerLabel} · {getTemplateProofLabel(template)}
+                    </small>
+                  </span>
+                  <span className="host-template-starter-action">
+                    {isApplying ? "Applying…" : "Use"}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
-        {boardsLocked || game.setupComplete ? (
-          <span className="template-library-entry-status">Start a new room to change templates</span>
-        ) : (
-          <a className="secondary-action" href={browseTemplatesHref}>
-            Browse templates
-          </a>
-        )}
-      </div>
+      )}
 
       <div className="custom-settings-heading">
-        <strong>Fine-tune this room</strong>
-        <span>Templates are copied into your room, so every setting remains editable.</span>
+        <p className="label">Build your own</p>
+        <strong>Set every option yourself</strong>
+        <span>You can still use the full task catalog when you reach the board step.</span>
       </div>
       <div className="game-settings-grid">
         <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
@@ -7453,7 +7899,7 @@ function getProofZipArchiveName() {
   const day = String(date.getDate()).padStart(2, "0");
   const datePart = `${year}-${month}-${day}`;
 
-  return `scavenger-bingo-proofs-${datePart}.zip`;
+  return `rally-hunt-proofs-${datePart}.zip`;
 }
 
 function getFilenamePart(value: string) {
@@ -8374,7 +8820,7 @@ function getRouteDisplay(
   if (!activeStop) {
     return {
       label: "Current route",
-      title: "Scavenger Blackout",
+      title: "Rally Hunt",
       detail: "The route is not set yet.",
       timeLabel: "",
       timerSmall: "not set",
@@ -8535,6 +8981,10 @@ function readInitialGameCode() {
 
   if (linkedGameCode) {
     return linkedGameCode;
+  }
+
+  if (readTemplateIdFromUrl()) {
+    return "";
   }
 
   return window.location.pathname === "/host" ? readStoredGameCode() : "";

@@ -3,7 +3,7 @@
 ## Reporting a concern
 
 During a pilot, report security or privacy concerns through the same private
-channel that supplied the Scavenger Blackout link. Include:
+channel that supplied the Rally Hunt link. Include:
 
 - The room code and approximate time.
 - Device, browser, and the action that was attempted.

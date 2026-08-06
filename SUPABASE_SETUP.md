@@ -9,7 +9,7 @@ Use a dedicated Supabase project for this app.
 
 ## Hosted Project
 
-1. Create a new Supabase project named `Scavenger Blackout`.
+1. Create a new Supabase project named `Rally Hunt`.
 2. In Auth settings, enable anonymous sign-ins.
 3. Copy `.env.example` to `.env.local` and fill in:
    - `VITE_SUPABASE_URL`

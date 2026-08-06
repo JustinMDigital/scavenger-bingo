@@ -29,7 +29,13 @@ live room to use a Durable Object for coordinated state and live updates.
    origins and the deployed privacy/support links, then set the public web
    client identifier as `VITE_GOOGLE_CLIENT_ID`. Never put a client secret in
    the browser environment.
-6. From the exact intended release commit and a clean worktree, run the
+6. If Cloudflare Workers Builds is connected to GitHub, configure it to build
+   with `npm run build:release` and deploy with
+   `npx wrangler versions upload`. Store the public support address and Google
+   client ID as build variables. This keeps automatic builds available as
+   preview versions without promoting an unchecked commit to production.
+   Production promotion must use the controlled command in step 8.
+7. From the exact intended release commit and a clean worktree, run the
    non-deploying release preflight:
 
    ```sh
@@ -42,7 +48,7 @@ live room to use a Durable Object for coordinated state and live updates.
    and a Wrangler packaging dry run. It refuses a dirty worktree or
    missing/invalid support and Google settings. The `--allow-dirty` option is for
    local diagnosis only.
-7. After the checklist and release owner explicitly approve production, copy
+8. After the checklist and release owner explicitly approve production, copy
    the exact 32-character account identifier from the approved Cloudflare
    account, set it together with the final verification URL, and publish:
 
@@ -56,9 +62,9 @@ live room to use a Durable Object for coordinated state and live updates.
    repeats the clean preflight, rejects source or public-configuration drift,
    deploys the exact verified build, then tags it with the generated release
    identifier.
-8. Configure and verify the custom domain and TLS from the project's
+9. Configure and verify the custom domain and TLS from the project's
    **Settings > Domains & Routes** page.
-9. Check the deployed identity and public pages without changing room data:
+10. Check the deployed identity and public pages without changing room data:
 
    ```sh
    npm run verify:deployment -- https://YOUR-DOMAIN

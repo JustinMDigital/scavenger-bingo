@@ -317,7 +317,7 @@ const ExportBoardSnapshot = forwardRef<HTMLDivElement, {
     >
       <div className="export-board-header">
         <div>
-          <span>SCAVENGER BINGO</span>
+          <span>RALLY HUNT</span>
           <h2>{game.name}</h2>
           <p>{group.shortName}</p>
         </div>

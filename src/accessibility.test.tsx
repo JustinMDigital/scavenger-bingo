@@ -12,7 +12,13 @@ import axe from "axe-core";
 import "fake-indexeddb/auto";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { GroupView, HostGate, HostLiveBoard } from "./App";
+import App, {
+  GameSettingsPanel,
+  GroupView,
+  HostGate,
+  HostLiveBoard,
+} from "./App";
+import { GAME_KITS } from "./gameKits";
 import { PlayerSlidesExport } from "./PlayerSlidesExport";
 import type {
   Game,
@@ -135,6 +141,7 @@ describe("public page accessibility", () => {
     ["/privacy", "Privacy"],
     ["/terms", "Terms"],
     ["/support", "Support"],
+    ["/templates", "Start with a game that already fits."],
     ["/templates/classroom", "Classroom Starter"],
   ])("has no automated accessibility violations at %s", async (path, heading) => {
     window.history.replaceState({}, "", path);
@@ -144,7 +151,7 @@ describe("public page accessibility", () => {
       expect(screen.getByRole("heading", { level: 1, name: heading })).toBeTruthy();
     });
     if (path === "/privacy" || path === "/terms" || path === "/support") {
-      expect(document.title).toBe(`${heading} | Scavenger Blackout`);
+      expect(document.title).toBe(`${heading} | Rally Hunt`);
     }
 
     const result = await axe.run(document.body, {
@@ -189,9 +196,129 @@ describe("public page accessibility", () => {
     expect(await screen.findByText(/anyone can host/i)).toBeTruthy();
     expect(screen.getByText(/friends, family, a class, or any other group/i)).toBeTruthy();
   });
+
+  it("lets people match and start a template without opening every preview", async () => {
+    window.history.replaceState({}, "", "/templates");
+    render(<App />);
+
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "Start with a game that already fits.",
+    });
+
+    GAME_KITS.forEach((template) => {
+      expect(
+        screen.getByRole("link", { name: `Start ${template.name}` }),
+      ).toBeTruthy();
+    });
+    expect(
+      screen.getByRole("link", { name: "Start Quick Bingo" }).getAttribute("href"),
+    ).toBe("/host?template=quick");
+
+    const kidsFilter = screen.getByRole("button", { name: "Kids & family" });
+    fireEvent.click(kidsFilter);
+    expect(kidsFilter.getAttribute("aria-pressed")).toBe("true");
+    expect(window.location.search).toBe("?filter=kids");
+    expect(screen.getByText("4 matches")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Classroom Starter" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "At-Home Adventure" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Park & Playground" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Kids’ Indoor Hunt" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Quick Bingo" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "All games" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search templates" }), {
+      target: { value: "team-building" },
+    });
+    expect(window.location.search).toBe("?q=team-building");
+    expect(screen.getByText("1 match")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Office Team-Building" })).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "See what is inside Office Team-Building" })
+        .getAttribute("href"),
+    ).toBe("/templates/office-team-building?q=team-building");
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search templates" }), {
+      target: { value: "not-a-real-template" },
+    });
+    expect(screen.getByText("No templates match that search.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("heading", { name: "Quick Bingo" })).toBeTruthy();
+  });
+
+  it("keeps template browse choices in the URL and return link", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/templates/new-team-welcome?filter=work&q=welcome",
+    );
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "New Team Welcome" });
+    expect(
+      screen.getByRole("link", { name: "All templates" }).getAttribute("href"),
+    ).toBe("/templates?q=welcome&filter=work");
+  });
+
+  it("keeps long task previews compact until someone asks for the full list", async () => {
+    window.history.replaceState({}, "", "/templates/quick");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Quick Bingo" });
+    expect(screen.getAllByText("Team Start").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Quiet Signal")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all 42 tasks" }));
+    expect(screen.getByText("Quiet Signal")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer tasks" }));
+    expect(screen.queryByText("Quiet Signal")).toBeNull();
+  });
+
+  it("starts the chosen template instead of reopening a previously stored room", async () => {
+    window.localStorage.setItem("scavenger-blackout-game-code", "OLD-ROOM");
+    window.history.replaceState({}, "", "/host?template=at-home-adventure");
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Create At-Home Adventure." }),
+    ).toBeTruthy();
+    expect(screen.getByText("No photos")).toBeTruthy();
+    expect(gameServiceMocks.loadGameState).not.toHaveBeenCalled();
+  });
 });
 
 describe("focused interaction accessibility", () => {
+  it("warns before a fast starter replaces meaningful room setup", async () => {
+    const onConfigure = vi.fn().mockResolvedValue(true);
+    const onNext = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(
+      <GameSettingsPanel
+        boardsLocked={false}
+        browseTemplatesHref="/host/templates?code=A11Y-ROOM"
+        game={{ ...TEST_GAME, setupComplete: false }}
+        hasExistingSetup
+        onConfigure={onConfigure}
+        onNext={onNext}
+      />,
+    );
+
+    expect(screen.getAllByText("Photo proof").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Quick Bingo/ }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(onConfigure).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /Quick Bingo/ }));
+    await waitFor(() => expect(onConfigure).toHaveBeenCalledWith("quick"));
+    expect(onNext).toHaveBeenCalledOnce();
+    confirm.mockRestore();
+  });
+
   it("clears a stale player board when the host has ended the room", async () => {
     let notifyRoomChange: (() => void) | undefined;
     const playerState: GameState = {

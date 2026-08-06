@@ -1,13 +1,13 @@
-# Teacher and student pilot rehearsal
+# Host and player pilot rehearsal
 
-Copy this file for each school pilot and keep the completed record with the
-release notes. Do not put student names, photos, host PINs, session cookies, or
-raw IP addresses in this record.
+Copy this file for each pilot and keep the completed record with the release
+notes. Do not put participant names, photos, host PINs, session cookies, or raw
+IP addresses in this record.
 
 ## Ownership and approval
 
 - Rehearsal date and time:
-- School or organization:
+- Group or organization:
 - Pilot owner:
 - Support/privacy contact:
 - Expected response time:
@@ -15,8 +15,8 @@ raw IP addresses in this record.
 - Deployment and rollback owner:
 - Google Cloud/OAuth/Drive owner:
 - Domain/DNS and TLS owner:
-- School approval recorded for:
-  - [ ] Activity and student notice
+- Organizer or organization approval recorded for:
+  - [ ] Activity and participant notice
   - [ ] Nickname guidance
   - [ ] Photo policy, or photos confirmed disabled
   - [ ] Individual and room deletion
@@ -43,19 +43,20 @@ raw IP addresses in this record.
 - Cloudflare plan:
 - Custom domain and TLS verified:
 - Google Drive API and OAuth web client verified:
-- Expected teachers, rooms, and students:
+- Expected hosts, rooms, and players:
 - Test network:
 - Devices and browsers:
 - Assistive technology used:
 
-## Classroom rehearsal
+## Group rehearsal
 
-- [ ] A teacher creates a Classroom Starter room.
-- [ ] Two additional teachers can create separate rooms on the same network.
-- [ ] At least 30 simulated or participating student devices join without
+- [ ] A host creates the appropriate starter room; photos remain off unless
+      they are explicitly approved for this pilot.
+- [ ] Two additional hosts can create separate rooms on the same network.
+- [ ] At least 30 simulated or participating player devices join without
   sharing identities.
-- [ ] A shared Chromebook/browser is cleared between two students; neither
-  nickname nor queued photo crosses to the next student.
+- [ ] A shared device/browser is cleared between two players; neither
+  nickname nor queued photo crosses to the next player.
 - [ ] Keyboard-only navigation, visible focus, 200% zoom/reflow, and reduced
   motion are checked.
 - [ ] A screen reader announces joining, game status, dialogs, controls, and
@@ -68,20 +69,20 @@ raw IP addresses in this record.
   then can export only the same team's current board.
 - [ ] The player must confirm each separate copy. Full roster, cross-team data,
   and proof ZIP export remain host-only.
-- [ ] On a shared Chromebook, Google code loads only after the export action,
-  account selection appears on every attempt, and no prior access token or
-  selected account is reused by the app.
+- [ ] On a shared device or Chromebook, Google code loads only after the export
+  action, account selection appears on every attempt, and no prior access token
+  or selected account is reused by the app.
 - [ ] Leaving, targeted deletion, room abandonment, and expiry messaging make
   clear that a downloaded or Google Drive copy must be deleted separately.
-- [ ] One student's data and proof are deleted and can no longer be opened.
-- [ ] Leaving clears the student's identity and queued proof from the device.
+- [ ] One player's data and proof are deleted and can no longer be opened.
+- [ ] Leaving clears the player's identity and queued proof from the device.
 - [ ] Abandoning the room removes it.
 
 ## Incident rehearsal
 
 - [ ] Leaked room code: close the lobby, remove unexpected members, and replace
   the room if needed.
-- [ ] Unintended photo: delete the student's data and confirm the proof is gone.
+- [ ] Unintended photo: delete the player's data and confirm the proof is gone.
 - [ ] Separately retained export: identify the host or authorized player copy
   and follow the organization's deletion process; do not promise remote recall.
 - [ ] Deletion request: complete targeted deletion and record only the time and
