@@ -71,7 +71,7 @@ test("player presentation export is denied by default and abandoning clears conn
       await abandonRoom(hostPage, roomCode);
 
       await expect(
-        playerPage.getByRole("heading", { name: "Join a scavenger hunt" }),
+        playerPage.getByRole("heading", { name: "Rally Hunt" }),
       ).toBeVisible();
       await expect(
         playerPage.getByRole("status").filter({
@@ -269,7 +269,7 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
 
       await expect(
         firstPlayerPage.getByRole("heading", {
-          name: "Join a scavenger hunt",
+          name: "Rally Hunt",
         }),
       ).toBeVisible();
       await expectStoredRoomIdentity(firstPlayerPage, null, null);
@@ -324,7 +324,7 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
         .getByRole("button", { name: "Leave and clear this device" })
         .click();
       await expect(
-        phonePlayerPage.getByRole("heading", { name: "Join a scavenger hunt" }),
+        phonePlayerPage.getByRole("heading", { name: "Rally Hunt" }),
       ).toBeVisible();
       await expectStoredRoomIdentity(phonePlayerPage, null, null);
       await expectPendingProofCount(phonePlayerPage, 0);
@@ -332,7 +332,7 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
       diagnostics.allowRoomEnded404.add(firstPlayerPage);
       await abandonRoom(hostPage, roomCode);
       await expect(
-        firstPlayerPage.getByRole("heading", { name: "Join a scavenger hunt" }),
+        firstPlayerPage.getByRole("heading", { name: "Rally Hunt" }),
       ).toBeVisible();
       await expectStoredRoomIdentity(firstPlayerPage, null, null);
     });

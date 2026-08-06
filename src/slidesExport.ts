@@ -8,6 +8,8 @@ const POWERPOINT_MIME_TYPE =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const SLIDE_WIDTH = 13.333;
 const SLIDE_HEIGHT = 7.5;
+const BRAND_NAME = "Rally Hunt";
+const BRAND_WORDMARK = "RALLY HUNT";
 const COLORS = {
   accent: "C8320D",
   accentDark: "7A240F",
@@ -175,13 +177,13 @@ export function buildPlayerSlidesExportModel({
   }
 
   const groupName = group.shortName.trim() || group.name.trim() || "Player";
-  const deckName = `${game.name.trim() || "Scavenger Hunt"} — ${groupName}`;
+  const deckName = `${game.name.trim() || BRAND_NAME} — ${groupName}`;
 
   return {
     approvedCount,
     exportedAt,
     fileName: `${getSafeFilename(deckName)}.pptx`,
-    gameName: game.name.trim() || "Scavenger Hunt",
+    gameName: game.name.trim() || BRAND_NAME,
     groupName,
     itemSlides,
     members: members.length > 0 ? members : [groupName],
@@ -364,8 +366,8 @@ export async function createPlayerSlidesDeck({
   const { default: PptxGenJSClass } = await import("pptxgenjs");
   const pptx = new PptxGenJSClass();
   pptx.layout = "LAYOUT_WIDE";
-  pptx.author = "Rally Hunt";
-  pptx.company = "Rally Hunt";
+  pptx.author = BRAND_NAME;
+  pptx.company = BRAND_NAME;
   pptx.subject = `${model.groupName} game board export`;
   pptx.title = model.fileName.replace(/\.pptx$/i, "");
   pptx.theme = {
@@ -474,56 +476,7 @@ function addTitleSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
     fill: { color: COLORS.accent },
     line: { color: COLORS.accent },
   });
-  slide.addShape(pptx.ShapeType.roundRect, {
-    x: 0.72,
-    y: 0.46,
-    w: 0.48,
-    h: 0.48,
-    rectRadius: 0.06,
-    fill: { color: COLORS.field },
-    line: { color: COLORS.field },
-  });
-  slide.addShape(pptx.ShapeType.ellipse, {
-    x: 0.8,
-    y: 0.76,
-    w: 0.07,
-    h: 0.07,
-    fill: { color: COLORS.accentSoft },
-    line: { color: COLORS.accentSoft },
-  });
-  slide.addShape(pptx.ShapeType.line, {
-    x: 0.85,
-    y: 0.78,
-    w: 0.17,
-    h: -0.16,
-    line: { color: COLORS.accentSoft, width: 2.5, beginArrowType: "none", endArrowType: "none" },
-  });
-  slide.addShape(pptx.ShapeType.line, {
-    x: 1.02,
-    y: 0.56,
-    w: 0,
-    h: 0.24,
-    line: { color: COLORS.white, width: 2, beginArrowType: "none", endArrowType: "none" },
-  });
-  slide.addShape(pptx.ShapeType.rect, {
-    x: 1.03,
-    y: 0.57,
-    w: 0.1,
-    h: 0.08,
-    fill: { color: COLORS.white },
-    line: { color: COLORS.white },
-  });
-  slide.addText("RALLY HUNT", {
-    x: 1.34,
-    y: 0.58,
-    w: 4,
-    h: 0.28,
-    color: COLORS.accent,
-    bold: true,
-    charSpacing: 2,
-    fontSize: 13,
-    margin: 0,
-  });
+  addRallyHuntBrand(pptx, slide, { x: 0.72, y: 0.46, size: 0.48, wordmark: true });
   slide.addText(model.gameName, {
     x: 0.72,
     y: 1.15,
@@ -641,6 +594,7 @@ function addBoardSlide(
       h: SLIDE_HEIGHT,
       altText: `${model.groupName} board snapshot`,
     });
+    addRallyHuntFooter(pptx, slide);
     return;
   }
 
@@ -721,6 +675,7 @@ function addBoardSlide(
       margin: 0,
     });
   });
+  addRallyHuntFooter(pptx, slide);
 }
 
 function addItemSlide(
@@ -876,6 +831,7 @@ function addItemSlide(
       margin: 0,
     });
   }
+  addRallyHuntFooter(pptx, slide);
 }
 
 function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
@@ -931,6 +887,7 @@ function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
       fontSize: 50,
       margin: 0,
     });
+    addRallyHuntFooter(pptx, slide);
     return;
   }
 
@@ -976,6 +933,93 @@ function addIncompleteSlide(pptx: PptxGenJS, model: PlayerSlidesExportModel) {
       margin: 0,
       valign: "middle",
     });
+  });
+  addRallyHuntFooter(pptx, slide);
+}
+
+type PresentationSlide = ReturnType<PptxGenJS["addSlide"]>;
+
+function addRallyHuntBrand(
+  pptx: PptxGenJS,
+  slide: PresentationSlide,
+  {
+    size,
+    wordmark = false,
+    x,
+    y,
+  }: { size: number; wordmark?: boolean; x: number; y: number },
+) {
+  slide.addShape(pptx.ShapeType.roundRect, {
+    x,
+    y,
+    w: size,
+    h: size,
+    rectRadius: size * 0.12,
+    fill: { color: COLORS.field },
+    line: { color: COLORS.field },
+  });
+  slide.addShape(pptx.ShapeType.ellipse, {
+    x: x + size * 0.18,
+    y: y + size * 0.7,
+    w: size * 0.14,
+    h: size * 0.14,
+    fill: { color: COLORS.accent },
+    line: { color: COLORS.accent },
+  });
+  slide.addShape(pptx.ShapeType.line, {
+    x: x + size * 0.25,
+    y: y + size * 0.72,
+    w: size * 0.39,
+    h: -size * 0.34,
+    line: {
+      color: COLORS.accent,
+      width: Math.max(1.4, size * 5),
+      beginArrowType: "none",
+      endArrowType: "none",
+    },
+  });
+  slide.addShape(pptx.ShapeType.line, {
+    x: x + size * 0.65,
+    y: y + size * 0.22,
+    w: 0,
+    h: size * 0.54,
+    line: {
+      color: COLORS.white,
+      width: Math.max(1.2, size * 4.2),
+      beginArrowType: "none",
+      endArrowType: "none",
+    },
+  });
+  slide.addShape(pptx.ShapeType.rect, {
+    x: x + size * 0.68,
+    y: y + size * 0.24,
+    w: size * 0.22,
+    h: size * 0.17,
+    fill: { color: COLORS.white },
+    line: { color: COLORS.white },
+  });
+
+  if (wordmark) {
+    slide.addText(BRAND_WORDMARK, {
+      x: x + size + 0.14,
+      y: y + size * 0.25,
+      w: 3.1,
+      h: size * 0.5,
+      color: COLORS.accent,
+      bold: true,
+      charSpacing: 2,
+      fontSize: 13,
+      margin: 0,
+    });
+  }
+}
+
+function addRallyHuntFooter(pptx: PptxGenJS, slide: PresentationSlide) {
+  addRallyHuntBrand(pptx, slide, {
+    x: 11.43,
+    y: 6.86,
+    size: 0.3,
+    wordmark: true,
   });
 }
 
@@ -1098,7 +1142,7 @@ function getSafeFilename(value: string) {
       .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 120) || "Scavenger Hunt"
+      .slice(0, 120) || BRAND_NAME
   );
 }
 

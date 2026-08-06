@@ -2502,8 +2502,13 @@ function GameCodeGate({
 
       <section className="landing-hero" aria-labelledby="game-code-title">
         <div className="landing-copy">
-          <h1 id="game-code-title">Join a scavenger hunt</h1>
-          <p>Enter the room code from your host to find your team and board.</p>
+          <h1 id="game-code-title">Rally Hunt</h1>
+          <p>
+            Rally Hunt is a browser-based scavenger hunt app that lets anyone create
+            and run a temporary group game, share a room code, and let players join
+            teams and complete a live game board without creating accounts.
+          </p>
+          <p>Have a room code? Enter it below to find your team and board.</p>
         </div>
 
         <form className="landing-join-form" onSubmit={handleSubmit}>

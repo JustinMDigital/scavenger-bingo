@@ -137,7 +137,7 @@ afterEach(() => {
 
 describe("public page accessibility", () => {
   it.each([
-    ["/", "Join a scavenger hunt"],
+    ["/", "Rally Hunt"],
     ["/privacy", "Privacy"],
     ["/terms", "Terms"],
     ["/support", "Support"],
@@ -193,6 +193,9 @@ describe("public page accessibility", () => {
   it("presents the game as something anyone can host", async () => {
     render(<App />);
 
+    expect(
+      await screen.findByText(/browser-based scavenger hunt app/i),
+    ).toBeTruthy();
     expect(await screen.findByText(/anyone can host/i)).toBeTruthy();
     expect(screen.getByText(/friends, family, a class, or any other group/i)).toBeTruthy();
   });
@@ -415,7 +418,7 @@ describe("focused interaction accessibility", () => {
       notifyRoomChange?.();
     });
 
-    await screen.findByRole("heading", { name: "Join a scavenger hunt" });
+    await screen.findByRole("heading", { name: "Rally Hunt" });
     expect(
       screen.queryByRole("heading", { name: "0 of 2 sent" }),
     ).toBeNull();

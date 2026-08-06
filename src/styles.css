@@ -6879,15 +6879,34 @@ img {
   padding: 34px 70px 20px 86px;
 }
 
-.export-board-header > div:first-child {
+.export-board-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 22px;
+}
+
+.export-board-title > div:last-child {
   min-width: 0;
 }
 
-.export-board-header span {
+.export-board-brand {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: center;
+  gap: 7px;
+}
+
+.export-board-brand svg {
+  width: 56px;
+  height: 56px;
+}
+
+.export-board-brand span {
   color: #c8320d;
-  font-size: 17px;
+  font-size: 10px;
   font-weight: 900;
-  letter-spacing: 3px;
+  letter-spacing: 1.5px;
 }
 
 .export-board-header h2 {

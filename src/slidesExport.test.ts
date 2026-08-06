@@ -150,6 +150,19 @@ describe("player Google Slides export model", () => {
     expect(model.fileName).toBe("Cells- -Lab- - Week 1 — Avery.pptx");
   });
 
+  it("uses Rally Hunt for an unnamed game's visible title and file", () => {
+    const model = buildPlayerSlidesExportModel({
+      game: { ...GAME, name: "   " },
+      group: GROUP,
+      roster: ROSTER,
+      submissions: [],
+      tasks: TASKS.slice(0, 1),
+    });
+
+    expect(model.gameName).toBe("Rally Hunt");
+    expect(model.fileName).toBe("Rally Hunt — Blue Team.pptx");
+  });
+
   it("handles a maximum 25-item untouched board in one ordered summary", () => {
     const tasks = Array.from({ length: 25 }, (_, index) =>
       task(`task-${index + 1}`, `Task ${index + 1}`),
