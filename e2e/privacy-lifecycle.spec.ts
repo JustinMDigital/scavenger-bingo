@@ -29,6 +29,7 @@ test("player presentation export is denied by default and abandoning clears conn
     await test.step("the room starts with player presentation export off", async () => {
       await createClassroomRoom(hostPage, roomCode);
 
+      await hostPage.getByRole("button", { name: "Change options" }).click();
       const playerExportToggle = hostPage.getByRole("checkbox", {
         name: "Let players export their own team after the hunt",
       });
@@ -115,6 +116,7 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
     await test.step("the host deliberately enables photos and player exports", async () => {
       await createClassroomRoom(hostPage, roomCode);
 
+      await hostPage.getByRole("button", { name: "Change options" }).click();
       const photoProofSelect = hostPage.getByRole("combobox", {
         name: /^Photo proof/,
       });
@@ -142,7 +144,7 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
         .check();
       await hostPage.getByRole("button", { name: "Save and continue" }).click();
       await expect(
-        hostPage.getByRole("heading", { name: "Name your teams" }),
+        hostPage.getByRole("heading", { name: "Review your teams" }),
       ).toBeVisible();
 
       await openLobby(hostPage, roomCode);
@@ -316,6 +318,9 @@ test("authorized export stays gated, photos remain team-bound, and player deleti
         await dialog.accept();
       });
       await phonePlayerPage
+        .getByText("Shared device options", { exact: true })
+        .click();
+      await phonePlayerPage
         .getByRole("button", { name: "Leave and clear this device" })
         .click();
       await expect(
@@ -357,7 +362,7 @@ async function createClassroomRoom(hostPage: Page, roomCode: string) {
     .click();
   await expect(
     hostPage.getByRole("heading", {
-      name: "Build the hunt one step at a time.",
+      name: "Ready to invite players.",
     }),
   ).toBeVisible();
 }

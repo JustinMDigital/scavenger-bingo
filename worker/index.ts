@@ -55,7 +55,7 @@ const MAX_HOST_ATTEMPTS = 5;
 const HOST_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const HOST_ATTEMPTS_KEY_PREFIX = "host-attempts:";
 const ROOM_KEY = "room";
-const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
+const PUBLIC_APP_ORIGIN = "https://playrallyhunt.com";
 const RESET_GAME_PATCH_KEYS = new Set([
   "activeStopId",
   "phase",

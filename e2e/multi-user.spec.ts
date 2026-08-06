@@ -46,7 +46,7 @@ test("one host and two independent players can start and update a hunt", async (
 
       await expect(
         hostPage.getByRole("heading", {
-          name: "Build the hunt one step at a time.",
+          name: "Ready to invite players.",
         }),
       ).toBeVisible();
       await hostPage.getByRole("button", { name: "Invite" }).click();

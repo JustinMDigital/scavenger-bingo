@@ -307,7 +307,7 @@ describe("focused interaction accessibility", () => {
       />,
     );
 
-    expect(screen.getAllByText("Photo proof").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Photo proof/i).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Quick Bingo/ }));
     expect(confirm).toHaveBeenCalledOnce();
     expect(onConfigure).not.toHaveBeenCalled();
@@ -317,6 +317,30 @@ describe("focused interaction accessibility", () => {
     await waitFor(() => expect(onConfigure).toHaveBeenCalledWith("quick"));
     expect(onNext).toHaveBeenCalledOnce();
     confirm.mockRestore();
+  });
+
+  it("discards unsaved custom settings when the host cancels", () => {
+    render(
+      <GameSettingsPanel
+        boardsLocked={false}
+        browseTemplatesHref="/host/templates?code=A11Y-ROOM"
+        game={{ ...TEST_GAME, setupComplete: false }}
+        hasExistingSetup={false}
+        onConfigure={vi.fn().mockResolvedValue(true)}
+        onNext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Change options" }));
+    fireEvent.change(screen.getByLabelText("Players"), {
+      target: { value: "individual" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change options" }));
+
+    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe(
+      TEST_GAME.playMode,
+    );
   });
 
   it("clears a stale player board when the host has ended the room", async () => {

@@ -6,7 +6,7 @@ import { TASK_CATALOG } from "../src/taskCatalog";
 import { createStarterRoom, createStarterTasks, upgradeRoom } from "./model";
 
 const ORIGIN = "https://example.com";
-const PUBLIC_APP_ORIGIN = "https://hunt.justinmdigital.com";
+const PUBLIC_APP_ORIGIN = "https://playrallyhunt.com";
 const HOST_COOKIE = "scavenger_session=host-session-00000000000001";
 const PLAYER_COOKIE = "scavenger_session=player-session-000000000001";
 const OTHER_COOKIE = "scavenger_session=other-session-0000000000001";

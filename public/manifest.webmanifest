@@ -1,0 +1,38 @@
+{
+  "name": "Rally Hunt",
+  "short_name": "Rally Hunt",
+  "description": "Create and join real-world scavenger hunts for any group—no accounts required.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8F3E6",
+  "theme_color": "#153C31",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "type": "image/x-icon",
+      "sizes": "16x16 32x32"
+    },
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    },
+    {
+      "src": "/icon-192-maskable.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512-maskable.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    }
+  ]
+}

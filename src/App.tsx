@@ -244,23 +244,11 @@ const PROOF_IMAGE_MIME_TYPES = new Set([
 
 function RallyMark({ className }: { className?: string }) {
   return (
-    <svg
-      aria-hidden="true"
+    <img
+      alt=""
       className={className}
-      viewBox="0 0 32 32"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M7 24.5c0-3.7 2.8-5.1 6-6.2 3.6-1.2 6-2.7 6-7.3"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-      <circle cx="7" cy="24.5" r="2.5" fill="currentColor" />
-      <path d="M19 5v15" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-      <path d="M20.5 6h7l-2.1 3.5 2.1 3.5h-7V6Z" fill="currentColor" />
-    </svg>
+      src="/apple-touch-icon.png"
+    />
   );
 }
 const PROOF_IMAGE_ACCEPT =
@@ -2402,7 +2390,10 @@ function LoadingView({
     <main className="main-content">
       <section className="welcome-card" aria-label="Loading game">
         <div>
-          <p className="label">Rally Hunt</p>
+          <div className="loading-brand">
+            <span aria-hidden="true"><RallyMark /></span>
+            <strong>Rally Hunt</strong>
+          </div>
           <h1>{roomCode ? `Loading ${roomCode}...` : "Loading game..."}</h1>
           <p>
             {isSlowLoad
@@ -2700,7 +2691,7 @@ const TEMPLATE_ICONS: Record<GameKit["id"], LucideIcon> = {
   "solo-photo-walk": Camera,
 };
 
-const HOST_STARTER_TEMPLATES = ["quick", "classroom", "birthday-party"]
+const HOST_STARTER_TEMPLATES = ["quick"]
   .map((templateId) => getGameKit(templateId))
   .filter((template): template is GameKit => Boolean(template));
 
@@ -3561,7 +3552,10 @@ function SiteHeader({
           )}
           <span className="room-code-kicker">Room {roomCode}</span>
         </p>
-        <h1>Rally Hunt</h1>
+        <h1 className="site-title">
+          <span className="site-title-mark" aria-hidden="true"><RallyMark /></span>
+          <span>Rally Hunt</span>
+        </h1>
       </div>
       <button
         aria-expanded={showStopDetails}
@@ -4247,13 +4241,15 @@ export function GroupView({
           proofMode={game.proofMode}
         />
       )}
-      <section className="player-privacy-actions" aria-label="Shared device controls">
-        <h2>Finished on this device?</h2>
-        <p>Leave the room and delete your submissions, photos, nickname, and saved retries.</p>
-        <button className="secondary-action" type="button" onClick={onLeave}>
-          Leave and clear this device
-        </button>
-      </section>
+      <details className="player-privacy-actions">
+        <summary>Shared device options</summary>
+        <div>
+          <p>Finished here? Leave the room and delete your saved player data.</p>
+          <button className="text-button" type="button" onClick={onLeave}>
+            Leave and clear this device
+          </button>
+        </div>
+      </details>
     </div>
   );
 }
@@ -4518,6 +4514,8 @@ function HostView({
   const [setupStep, setSetupStep] = useState<"game" | "teams" | "boards" | "route">(
     "game",
   );
+  const setupContentRef = useRef<HTMLDivElement>(null);
+  const previousSetupStepRef = useRef(setupStep);
   const boardSlotCount = getBoardSlotCount(game.boardSize);
   const playableTaskCount = tasks.filter((task) => !task.free).length;
   const requiredTaskCount = getRequiredPlayableTaskCount(
@@ -4539,12 +4537,40 @@ function HostView({
     boardsReady &&
     (game.playMode === "individual" || groups.length > 0) &&
     (game.timerMode !== "schedule" || stops.length > 0);
+  const setupBlockers = [
+    ...(game.playMode === "teams" && groups.length === 0
+      ? [{ step: "teams" as const, label: "Add at least one team" }]
+      : []),
+    ...(!boardsReady
+      ? [{ step: "boards" as const, label: "Finish and shuffle the boards" }]
+      : []),
+    ...(game.timerMode === "schedule" && stops.length === 0
+      ? [{ step: "route" as const, label: "Add at least one route stop" }]
+      : []),
+  ];
 
   useEffect(() => {
     if (game.setupComplete) {
       setHostArea("run");
     }
   }, [game.setupComplete]);
+
+  useEffect(() => {
+    if (previousSetupStepRef.current === setupStep) return;
+    previousSetupStepRef.current = setupStep;
+    const frame = window.requestAnimationFrame(() => {
+      setupContentRef.current
+        ?.querySelector<HTMLElement>("h2")
+        ?.focus({ preventScroll: true });
+      setupContentRef.current?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+        block: "start",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [setupStep]);
 
   const setupSteps = [
     {
@@ -4645,9 +4671,11 @@ function HostView({
         <>
           <section className="host-setup-intro" aria-labelledby="setup-heading">
             <div>
-              <p className="label">Before players begin</p>
-              <h2 id="setup-heading">Build the hunt one step at a time.</h2>
-              <p>Choose how people play, prepare the boards, set the timing, then open the lobby.</p>
+              <p className="label">Room setup</p>
+              <h2 id="setup-heading">
+                {setupReady ? "Ready to invite players." : "A few choices, then invite players."}
+              </h2>
+              <p>Your room stays private until you open the join screen.</p>
             </div>
             <ol className="host-setup-steps">
               {setupSteps.map((step, index) => (
@@ -4674,6 +4702,7 @@ function HostView({
             </ol>
           </section>
 
+          <div className="host-setup-content" ref={setupContentRef}>
           {setupStep === "game" && (
             <GameSettingsPanel
               game={game}
@@ -4692,8 +4721,14 @@ function HostView({
               <div className="host-step-heading">
                 <div>
                   <p className="label">Step 2</p>
-                  <h2 id="setup-teams-heading">Name your teams</h2>
-                  <p>Add or rename teams now. Players will choose from this list.</p>
+                  <h2 id="setup-teams-heading" tabIndex={-1}>
+                    {groups.length > 0 ? "Review your teams" : "Add your teams"}
+                  </h2>
+                  <p>
+                    {groups.length > 0
+                      ? "Rename or recolor them if needed. Players choose a team when they join."
+                      : "Add at least one team. Players choose from this list when they join."}
+                  </p>
                 </div>
                 <span>{groups.length === 1 ? "1 team" : `${groups.length} teams`}</span>
               </div>
@@ -4719,10 +4754,11 @@ function HostView({
               <div className="host-step-actions">
                 <button
                   className="primary-action"
+                  disabled={groups.length === 0}
                   type="button"
                   onClick={() => setSetupStep("boards")}
                 >
-                  Next: make the boards
+                  Next: review the boards
                 </button>
               </div>
             </section>
@@ -4733,8 +4769,14 @@ function HostView({
               <div className="host-step-heading">
                 <div>
                   <p className="label">Step 3</p>
-                  <h2 id="setup-boards-heading">Make the boards</h2>
-                  <p>Choose tasks from the catalog, make any edits, then shuffle the boards.</p>
+                  <h2 id="setup-boards-heading" tabIndex={-1}>
+                    {boardsReady ? "Review the boards" : "Make the boards"}
+                  </h2>
+                  <p>
+                    {boardsReady
+                      ? "The boards are ready. Open the editor only if you want to change them."
+                      : "Choose tasks from the catalog, make any edits, then shuffle the boards."}
+                  </p>
                 </div>
                 <span>{boardsReady ? "Ready" : "In progress"}</span>
               </div>
@@ -4754,9 +4796,9 @@ function HostView({
                 onSaveGroupBoard={saveGroupBoard}
                 onUpdateBoardSetup={updateBoardSetup}
                 onUpdateTask={updateTask}
-                openByDefault
+                openByDefault={!boardsReady}
                 playMode={game.playMode}
-                showHeading={false}
+                showHeading={boardsReady}
                 submissions={submissions}
                 tasks={tasks}
               />
@@ -4784,7 +4826,7 @@ function HostView({
               <div className="host-step-heading">
                 <div>
                   <p className="label">Step 4</p>
-                  <h2 id="setup-route-heading">
+                  <h2 id="setup-route-heading" tabIndex={-1}>
                     {game.timerMode === "schedule" ? "Plan the route" : "Ready for players"}
                   </h2>
                   <p>
@@ -4829,6 +4871,27 @@ function HostView({
                 <Plus aria-hidden="true" />
                 Add stop
               </button>}
+              <div className={setupReady ? "setup-readiness is-ready" : "setup-readiness"}>
+                <span aria-hidden="true">
+                  {setupReady ? <Check /> : <Flag />}
+                </span>
+                <div>
+                  <strong>{setupReady ? "Setup complete" : "Finish setup before inviting"}</strong>
+                  {setupReady ? (
+                    <p>Your join screen is ready to share.</p>
+                  ) : (
+                    <ul>
+                      {setupBlockers.map((blocker) => (
+                        <li key={blocker.step}>
+                          <button type="button" onClick={() => setSetupStep(blocker.step)}>
+                            {blocker.label}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
               <div className="host-step-actions">
                 <button
                   className="secondary-action"
@@ -4840,7 +4903,7 @@ function HostView({
                 <button
                   className="primary-action"
                   type="button"
-                  disabled={!boardsReady || (game.playMode === "teams" && groups.length === 0) || (game.timerMode === "schedule" && stops.length === 0)}
+                  disabled={!setupReady}
                   onClick={() => {
                     updateRoom({ lobbyOpen: true });
                     setHostArea("lobby");
@@ -4852,6 +4915,7 @@ function HostView({
               </div>
             </section>
           )}
+          </div>
         </>
       )}
 
@@ -5300,6 +5364,7 @@ export function GameSettingsPanel({
   });
   const [startTime, setStartTime] = useState("10:00 AM");
   const [isSaving, setIsSaving] = useState(false);
+  const [showCustomSettings, setShowCustomSettings] = useState(false);
   const [applyingTemplateId, setApplyingTemplateId] = useState<GameKit["id"] | null>(null);
   const [photoApprovalAcknowledged, setPhotoApprovalAcknowledged] = useState(false);
   const [playerExportApprovalAcknowledged, setPlayerExportApprovalAcknowledged] =
@@ -5319,6 +5384,9 @@ export function GameSettingsPanel({
     setPhotoApprovalAcknowledged(false);
     setPlayerExportApprovalAcknowledged(false);
   }, [game]);
+
+  const customSetupNeedsReview =
+    draft.proofMode !== "none" || draft.playerExportMode === "team-after-review";
 
   async function saveCustom() {
     setIsSaving(true);
@@ -5343,12 +5411,29 @@ export function GameSettingsPanel({
     if (saved) onNext();
   }
 
+  function cancelCustomSettings() {
+    setDraft({
+      name: game.name,
+      playMode: game.playMode,
+      winCondition: game.winCondition,
+      proofMode: game.proofMode,
+      approvalMode: game.approvalMode,
+      playerExportMode: game.playerExportMode ?? "host-only",
+      timerMode: game.timerMode,
+      timerDurationMinutes: game.timerDurationMinutes,
+    });
+    setStartTime("10:00 AM");
+    setPhotoApprovalAcknowledged(false);
+    setPlayerExportApprovalAcknowledged(false);
+    setShowCustomSettings(false);
+  }
+
   return (
     <section className="host-step-panel game-settings-panel" aria-labelledby="setup-game-heading">
       <div className="host-step-heading">
         <div>
           <p className="label">Step 1</p>
-          <h2 id="setup-game-heading">Choose your game</h2>
+          <h2 id="setup-game-heading" tabIndex={-1}>Choose your game</h2>
           <p>Start ready-made in one tap, or build the setup yourself.</p>
         </div>
         <span>{boardsLocked ? "Format locked" : "Flexible setup"}</span>
@@ -5370,10 +5455,10 @@ export function GameSettingsPanel({
           <div className="host-template-starters-heading">
             <div>
               <p className="label">Fastest setup</p>
-              <strong>Start with a ready-made game</strong>
-              <span>Rules, tasks, teams, and boards are included. You can edit them next.</span>
+              <strong>Start with Quick Bingo</strong>
+              <span>A 30-minute game with two teams, photo proof, and ready-to-use boards.</span>
             </div>
-            <a href={browseTemplatesHref}>See all templates</a>
+            <a href={browseTemplatesHref}>Browse all ready-made games</a>
           </div>
           <div className="host-template-starter-grid">
             {HOST_STARTER_TEMPLATES.map((template) => {
@@ -5405,78 +5490,88 @@ export function GameSettingsPanel({
         </div>
       )}
 
-      <div className="custom-settings-heading">
-        <p className="label">Build your own</p>
-        <strong>Set every option yourself</strong>
-        <span>You can still use the full task catalog when you reach the board step.</span>
-      </div>
-      <div className="game-settings-grid">
-        <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-        <label className="field"><span>Players</span><select value={draft.playMode} onChange={(event) => setDraft({ ...draft, playMode: event.target.value as Game["playMode"] })}><option value="teams">Teams</option><option value="individual">Free-for-all</option></select></label>
-        <label className="field"><span>Winning</span><select value={draft.winCondition} onChange={(event) => setDraft({ ...draft, winCondition: event.target.value as Game["winCondition"] })}><option value="blackout">Blackout — every square</option><option value="bingo">Bingo — one full line</option></select></label>
-        <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => { const proofMode = event.target.value as Game["proofMode"]; setDraft({ ...draft, proofMode }); if (proofMode === "none") setPhotoApprovalAcknowledged(false); }}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photo uploads</option></select><small>{draft.proofMode === "none" ? "A simple choice for any group that does not need pictures. Players complete tasks without uploading images." : "Uploaded photos stay in the temporary room for up to seven days."}</small></label>
-        <label className="field"><span>Approval</span><select value={draft.approvalMode} disabled={draft.proofMode === "none"} onChange={(event) => setDraft({ ...draft, approvalMode: event.target.value as Game["approvalMode"] })}><option value="host">Host approves</option><option value="automatic">Automatic</option></select></label>
-        <label className="field"><span>Timer</span><select value={draft.timerMode} onChange={(event) => setDraft({ ...draft, timerMode: event.target.value as TimerMode })}><option value="none">No timer</option><option value="duration">Countdown</option><option value="schedule">Scheduled stops</option></select></label>
-        {draft.timerMode === "duration" && <label className="field"><span>Minutes</span><input min={1} max={1440} type="number" value={draft.timerDurationMinutes} onChange={(event) => setDraft({ ...draft, timerDurationMinutes: Number(event.target.value) })} /></label>}
-        {draft.timerMode === "schedule" && <label className="field"><span>First start time</span><input value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
-        {draft.proofMode !== "none" && (
-          <label className="task-free-toggle photo-approval-toggle">
-            <input
-              checked={photoApprovalAcknowledged}
-              type="checkbox"
-              onChange={(event) => setPhotoApprovalAcknowledged(event.target.checked)}
-            />
-            I have participant approval and any additional approval my group requires
-            to collect photos. I will avoid faces, private documents, and exact locations
-            unless specifically approved.
-          </label>
+      <section className={boardsLocked || game.setupComplete ? "custom-settings-summary is-readonly" : "custom-settings-summary"} aria-labelledby="custom-setup-heading">
+        <div className="custom-settings-summary-copy">
+          <p className="label">Build your own</p>
+          <strong id="custom-setup-heading">
+            {boardsLocked || game.setupComplete ? "Current game settings" : "Start with a simple setup"}
+          </strong>
+          <span>
+            {boardsLocked || game.setupComplete
+              ? "These choices are locked after play begins."
+              : "Use these sensible defaults, or change only what matters for your group."}
+          </span>
+        </div>
+        <div className="custom-settings-facts" aria-label="Current game choices">
+          <span>{draft.playMode === "teams" ? "Teams" : "Free-for-all"}</span>
+          <span>{draft.winCondition === "bingo" ? "Bingo" : "Blackout"}</span>
+          <span>{draft.proofMode === "none" ? "No photos" : draft.proofMode === "required" ? "Photos required" : "Photos optional"}</span>
+          <span>{draft.timerMode === "none" ? "No timer" : draft.timerMode === "duration" ? `${draft.timerDurationMinutes} min` : "Scheduled stops"}</span>
+        </div>
+        {!boardsLocked && !game.setupComplete && !showCustomSettings && (
+          <div className="custom-settings-summary-actions">
+            <button className="secondary-action" type="button" onClick={() => setShowCustomSettings(true)}>
+              Change options
+            </button>
+            <button
+              className="primary-action"
+              disabled={isSaving || !draft.name.trim()}
+              type="button"
+              onClick={() => customSetupNeedsReview ? setShowCustomSettings(true) : void saveCustom()}
+            >
+              {customSetupNeedsReview ? "Review and continue" : isSaving ? "Saving..." : "Use this setup"}
+            </button>
+          </div>
         )}
-        <label className="task-free-toggle player-export-toggle">
-          <input
-            checked={draft.playerExportMode === "team-after-review"}
-            disabled={
-              game.setupComplete &&
-              draft.playerExportMode !== "team-after-review"
-            }
-            type="checkbox"
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              setDraft({
-                ...draft,
-                playerExportMode: enabled ? "team-after-review" : "host-only",
-              });
-              if (!enabled) setPlayerExportApprovalAcknowledged(false);
-            }}
-          />
-          Let players export their own team after the hunt
-        </label>
-        {game.setupComplete &&
-          draft.playerExportMode !== "team-after-review" && (
-          <small className="player-export-locked-note">
-            Player presentation sharing cannot be newly enabled after play begins.
-          </small>
-        )}
-        {draft.playerExportMode === "team-after-review" && (
-          <label className="task-free-toggle player-export-approval-toggle">
-            <input
-              checked={playerExportApprovalAcknowledged}
-              type="checkbox"
-              onChange={(event) =>
-                setPlayerExportApprovalAcknowledged(event.target.checked)
-              }
-            />
-            I have approval to let players make and keep separate copies of their
-            team’s names, board, proof photos, and photographer credits. I understand
-            deleting the room will not delete those copies.
-          </label>
-        )}
-      </div>
+      </section>
 
-      <div className="host-step-actions">
-        <button className="primary-action" disabled={isSaving || boardsLocked || !draft.name.trim() || (draft.proofMode !== "none" && !photoApprovalAcknowledged) || (draft.playerExportMode === "team-after-review" && !playerExportApprovalAcknowledged)} type="button" onClick={saveCustom}>
-          {isSaving ? "Saving..." : "Save and continue"}
-        </button>
-      </div>
+      {showCustomSettings && !boardsLocked && !game.setupComplete && (
+        <>
+          <div className="custom-settings-heading">
+            <div>
+              <p className="label">Custom setup</p>
+              <strong>Change the game settings</strong>
+              <span>The task catalog and board layout come next.</span>
+            </div>
+            <button className="text-button" type="button" onClick={() => setShowCustomSettings(false)}>
+              Use simple view
+            </button>
+          </div>
+          <div className="game-settings-grid">
+            <label className="field game-name-field"><span>Game name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+            <label className="field"><span>Players</span><select value={draft.playMode} onChange={(event) => setDraft({ ...draft, playMode: event.target.value as Game["playMode"] })}><option value="teams">Teams</option><option value="individual">Free-for-all</option></select></label>
+            <label className="field"><span>Winning</span><select value={draft.winCondition} onChange={(event) => setDraft({ ...draft, winCondition: event.target.value as Game["winCondition"] })}><option value="blackout">Blackout — every square</option><option value="bingo">Bingo — one full line</option></select></label>
+            <label className="field"><span>Photo proof</span><select value={draft.proofMode} onChange={(event) => { const proofMode = event.target.value as Game["proofMode"]; setDraft({ ...draft, proofMode }); if (proofMode === "none") setPhotoApprovalAcknowledged(false); }}><option value="required">Required</option><option value="optional">Optional</option><option value="none">No photo uploads</option></select><small>{draft.proofMode === "none" ? "Players complete tasks without uploading pictures." : "Uploaded photos stay in the temporary room for up to seven days."}</small></label>
+            <label className="field"><span>Approval</span><select value={draft.approvalMode} disabled={draft.proofMode === "none"} onChange={(event) => setDraft({ ...draft, approvalMode: event.target.value as Game["approvalMode"] })}><option value="host">Host approves</option><option value="automatic">Automatic</option></select></label>
+            <label className="field"><span>Timer</span><select value={draft.timerMode} onChange={(event) => setDraft({ ...draft, timerMode: event.target.value as TimerMode })}><option value="none">No timer</option><option value="duration">Countdown</option><option value="schedule">Scheduled stops</option></select></label>
+            {draft.timerMode === "duration" && <label className="field"><span>Minutes</span><input min={1} max={1440} type="number" value={draft.timerDurationMinutes} onChange={(event) => setDraft({ ...draft, timerDurationMinutes: Number(event.target.value) })} /></label>}
+            {draft.timerMode === "schedule" && <label className="field"><span>First start time</span><input value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
+            {draft.proofMode !== "none" && (
+              <label className="task-free-toggle photo-approval-toggle">
+                <input checked={photoApprovalAcknowledged} type="checkbox" onChange={(event) => setPhotoApprovalAcknowledged(event.target.checked)} />
+                I have participant approval and any additional approval my group requires to collect photos. I will avoid faces, private documents, and exact locations unless specifically approved.
+              </label>
+            )}
+            <label className="task-free-toggle player-export-toggle">
+              <input checked={draft.playerExportMode === "team-after-review"} disabled={game.setupComplete && draft.playerExportMode !== "team-after-review"} type="checkbox" onChange={(event) => { const enabled = event.target.checked; setDraft({ ...draft, playerExportMode: enabled ? "team-after-review" : "host-only" }); if (!enabled) setPlayerExportApprovalAcknowledged(false); }} />
+              Let players export their own team after the hunt
+            </label>
+            {game.setupComplete && draft.playerExportMode !== "team-after-review" && <small className="player-export-locked-note">Player presentation sharing cannot be newly enabled after play begins.</small>}
+            {draft.playerExportMode === "team-after-review" && (
+              <label className="task-free-toggle player-export-approval-toggle">
+                <input checked={playerExportApprovalAcknowledged} type="checkbox" onChange={(event) => setPlayerExportApprovalAcknowledged(event.target.checked)} />
+                I have approval to let players make and keep separate copies of their team’s names, board, proof photos, and photographer credits. I understand deleting the room will not delete those copies.
+              </label>
+            )}
+          </div>
+          <div className="host-step-actions">
+            <button className="secondary-action" type="button" onClick={cancelCustomSettings}>Cancel</button>
+            <button className="primary-action" disabled={isSaving || !draft.name.trim() || (draft.proofMode !== "none" && !photoApprovalAcknowledged) || (draft.playerExportMode === "team-after-review" && !playerExportApprovalAcknowledged)} type="button" onClick={saveCustom}>
+              {isSaving ? "Saving..." : "Save and continue"}
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -5665,6 +5760,7 @@ function TeamManagementPanel({
         </div>
       )}
 
+      {showHeading && <>
       {players.length > 0 && playMode === "teams" ? (
         <div className="roster-grid">
           {groups.map((group) => {
@@ -5788,6 +5884,7 @@ function TeamManagementPanel({
           <div>{players.map((player) => <button className="host-chip" key={player.id} type="button" onClick={() => onPromotePlayer(player.id)}>+ {player.displayName}</button>)}</div>
         </div>
       )}
+      </>}
     </section>
   );
 }
