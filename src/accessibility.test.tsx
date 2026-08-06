@@ -219,8 +219,9 @@ describe("public page accessibility", () => {
     fireEvent.click(kidsFilter);
     expect(kidsFilter.getAttribute("aria-pressed")).toBe("true");
     expect(window.location.search).toBe("?filter=kids");
-    expect(screen.getByText("4 matches")).toBeTruthy();
+    expect(screen.getByText("5 matches")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Classroom Starter" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Theater Tech Scavenger Hunt" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "At-Home Adventure" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Park & Playground" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Kids’ Indoor Hunt" })).toBeTruthy();
@@ -275,6 +276,19 @@ describe("public page accessibility", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Show fewer tasks" }));
     expect(screen.queryByText("Quiet Signal")).toBeNull();
+  });
+
+  it("presents the complete theater tech template and its safety guidance", async () => {
+    window.history.replaceState({}, "", "/templates/theater-tech");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Theater Tech Scavenger Hunt" });
+    expect(screen.getByText("35 editable tasks")).toBeTruthy();
+    expect(screen.getByText(/do not touch equipment or tools/i)).toBeTruthy();
+    expect(screen.getAllByText("Scene Shop First Aid Kit").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all 35 tasks" }));
+    expect(screen.getByText("Excited To Learn")).toBeTruthy();
   });
 
   it("starts the chosen template instead of reopening a previously stored room", async () => {

@@ -297,6 +297,7 @@ const ICONS: Record<string, LucideIcon> = {
   Image,
   Landmark,
   Leaf,
+  Lock,
   Mailbox,
   Martini,
   Palette,
@@ -320,6 +321,7 @@ const ICONS: Record<string, LucideIcon> = {
   Umbrella,
   Utensils,
   UtensilsCrossed,
+  Users,
   Volleyball,
   Waves,
 };
@@ -2677,6 +2679,7 @@ function readTemplateFilterFromUrl(): TemplateFilterId {
 
 const TEMPLATE_ICONS: Record<GameKit["id"], LucideIcon> = {
   classroom: School,
+  "theater-tech": HardHat,
   quick: Dices,
   "at-home-adventure": Armchair,
   "free-for-all": Trophy,

@@ -17,7 +17,7 @@ test("template browser keeps matching context and starts the chosen game", async
   await kidsFilter.click();
   await expect(kidsFilter).toHaveAttribute("aria-pressed", "true");
   await expect(page).toHaveURL(/\/templates\?filter=kids$/);
-  await expect(page.getByText("4 matches", { exact: true })).toBeVisible();
+  await expect(page.getByText("5 matches", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "At-Home Adventure" }),
   ).toBeVisible();
@@ -29,6 +29,9 @@ test("template browser keeps matching context and starts the chosen game", async
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Kids’ Indoor Hunt" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Theater Tech Scavenger Hunt" }),
   ).toBeVisible();
 
   const useAtHome = page.getByRole("link", { name: "Start At-Home Adventure" });

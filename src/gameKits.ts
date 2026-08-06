@@ -8,6 +8,7 @@ export type GameKitId =
   | "office-team-building"
   | "kids-indoor"
   | "classroom"
+  | "theater-tech"
   | "at-home-adventure"
   | "park-playground"
   | "neighborhood-stroll"
@@ -165,6 +166,44 @@ const classroomTasks = tasks([
   ["helpful-sign", "Helpful Sign", "Find a sign or label that helps people know what to do.", "Signpost"],
   ["team-story", "One-Sentence Story", "Make a sentence with each teammate adding one word.", "Users"],
   ["learning-win", "Learning Win", "Name one thing your team noticed that it had not seen before.", "Trophy"],
+]);
+
+const theaterTechTasks = tasks([
+  ["scene-shop-first-aid", "Scene Shop First Aid Kit", "You scraped your hand. Take a photo of a first aid kit in the scene shop.", "HeartHandshake"],
+  ["mainstage-first-aid", "Mainstage First Aid Kit", "You tripped backstage. Take a photo of the first aid kit on the mainstage.", "HeartHandshake"],
+  ["closest-emergency-exit", "Closest Emergency Exit", "A fire alarm goes off. Take a photo of the closest emergency exit from where you are.", "Signpost"],
+  ["second-level-door", "Second-Level Door", "Find the door that leads to the theater's second level. Do not go upstairs—just take a photo with the door.", "Eye"],
+  ["class-doorbell", "Class Doorbell", "You're late to class. Take a photo with the doorbell you should ring.", "Badge"],
+  ["actors-waiting-place", "Waiting For Places", "You hear “Places!” Take a photo of where actors quietly wait before entering the stage.", "Users"],
+  ["cleanup-supplies", "Cleanup Supplies", "You spilled on the floor. Take a photo of where the paper towels or cleanup supplies are kept.", "Trash2"],
+  ["walkie-talkie", "Walkie-Talkie", "You're assigned a walkie-talkie. Take a photo pretending to use one.", "Users"],
+  ["body-microphone-line", "Body Microphone Line", "You're helping with body microphones. Take a photo of where actors line up to receive them.", "Users"],
+  ["spike-tape", "Spike Tape", "You need to spike a piece of furniture. Take a photo with the spike tape.", "HardHat"],
+  ["flower-prop", "Flower Prop", "An actor needs a flower for the next scene. Find the prop and take a photo.", "Flower2"],
+  ["cup-prop", "Cup Prop", "An actor needs a cup for the next scene. Find the prop and take a photo.", "CupSoda"],
+  ["long-haired-wig", "Long-Haired Wig", "An actor needs a long-haired wig. Put it on and take a photo.", "Smile"],
+  ["costume-measuring-tape", "Costume Measuring Tape", "You need to measure an actor for a costume. Find the costume measuring tape and take a photo.", "Shirt"],
+  ["costume-group-photo", "Costume Group Photo", "Take a group photo with all of the costumes.", "Camera"],
+  ["strangest-prop", "Strangest Prop", "Find the strangest prop and take a photo with it.", "Gem"],
+  ["paintbrush-cleaning", "Paintbrush Cleaning Area", "You just finished painting. Take a photo of where paintbrushes are cleaned.", "Palette"],
+  ["paint-storage", "Paint Storage", "Take a photo of where paint is stored.", "Palette"],
+  ["backstage-eating-area", "Backstage Eating Area", "Take a photo relaxing in the only place you're allowed to eat backstage.", "Utensils"],
+  ["makeup-area", "Makeup Area", "Pretend you're getting ready for a performance. Take a photo in the makeup area.", "Star"],
+  ["charging-station", "Charging Station", "Your phone needs to be charged. Take a photo with the charging station.", "Badge"],
+  ["mainstage-audience-seats", "Mainstage Audience Seats", "Sit where the audience sits in the mainstage theater and take a photo.", "Armchair"],
+  ["student-restroom", "Student Restroom", "Take a photo in front of the only restroom students should use during class time.", "Toilet"],
+  ["center-stage-team-photo", "Center Stage Team Photo", "Stand center stage and take a team photo with the house in the background.", "Camera"],
+  ["mainstage-catwalk", "Mainstage Catwalk", "Take a photo pointing to the catwalk from the mainstage.", "Eye"],
+  ["gloves-and-training", "Gloves And Training", "Take a photo with something you must wear gloves and have training to handle. Do not touch it.", "HardHat"],
+  ["mainstage-light-panel", "Mainstage Light Panel", "Take a photo with the control panel that quickly turns the mainstage lights on and off.", "Flame"],
+  ["black-box-light-switch", "Black Box Light Switch", "Take a photo with a light switch in the Black Box Theatre.", "Badge"],
+  ["permission-required", "Permission Required", "Take a photo with something students may not touch without permission. Do not touch it.", "Lock"],
+  ["theater-namesakes", "Theater Namesakes", "Take a photo with the namesakes of the theater.", "Landmark"],
+  ["front-of-house-storage", "Front Of House Storage", "Go to the storage area where Front of House supplies are kept and take a photo.", "Grid3X3"],
+  ["concessions", "Concessions", "Take a photo pretending you're selling concessions during intermission.", "Ticket"],
+  ["pac-helper", "PAC Helper", "Take a selfie with someone in the PAC you can go to for guidance or help.", "HeartHandshake"],
+  ["every-production", "Every Production", "Find and photograph something used in every single production, no matter the show.", "Star"],
+  ["excited-to-learn", "Excited To Learn", "Take a photo of one thing you're most excited to learn how to use this year. Do not touch it.", "Trophy"],
 ]);
 
 const quickTasks = tasks([
@@ -407,6 +446,30 @@ export const GAME_KITS: readonly GameKit[] = [
     timerDurationMinutes: 30,
     teamCount: 2,
     tasks: classroomTasks,
+  },
+  {
+    id: "theater-tech",
+    name: "Theater Tech Scavenger Hunt",
+    gameName: "Theater Tech Scavenger Hunt",
+    category: "Schools",
+    setting: "Theater or performing arts center",
+    ageLabel: "Students",
+    summary: "A photo-based orientation to theater spaces, safety, tools, costumes, and backstage routines.",
+    detail: "Different 5×5 boards with host-reviewed photo proof. Be respectful of the space and do not touch equipment or tools.",
+    searchTags: ["school", "student", "theater", "theatre", "drama", "backstage", "stagecraft", "technical theater", "photo"],
+    playerLabel: "3 teams",
+    durationLabel: "60 min",
+    playMode: "teams",
+    winCondition: "blackout",
+    boardSize: 5,
+    boardMode: "randomized",
+    freeSpace: false,
+    proofMode: "required",
+    approvalMode: "host",
+    timerMode: "duration",
+    timerDurationMinutes: 60,
+    teamCount: 3,
+    tasks: theaterTechTasks,
   },
   {
     id: "quick",
