@@ -6274,6 +6274,8 @@ img {
 }
 
 .template-detail-actions a {
+  padding: 0.85rem 1rem;
+  line-height: 1.15;
   text-decoration: none;
 }
 

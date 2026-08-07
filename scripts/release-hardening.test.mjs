@@ -106,6 +106,16 @@ test("initial homepage HTML identifies Rally Hunt and explains its purpose", () 
   assert.match(homepage, /Temporary by design/);
   assert.match(homepage, /href="\/privacy"/);
   assert.match(homepage, /href="\/terms"/);
+  assert.match(homepage, /property="og:image" content="https:\/\/scavenger-bingo\.jusmarr\.workers\.dev\/social-card\.png"/);
+  assert.match(homepage, /name="twitter:card" content="summary_large_image"/);
+  assert.match(homepage, /name="twitter:image" content="https:\/\/scavenger-bingo\.jusmarr\.workers\.dev\/social-card\.png"/);
+
+  const socialCard = readFileSync(
+    new URL("../public/social-card.png", import.meta.url),
+  );
+  assert.equal(socialCard.subarray(1, 4).toString("ascii"), "PNG");
+  assert.equal(socialCard.readUInt32BE(16), 1200);
+  assert.equal(socialCard.readUInt32BE(20), 630);
 });
 
 test("read-only CI pins official actions and does not persist checkout credentials", () => {
