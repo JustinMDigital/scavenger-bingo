@@ -102,6 +102,8 @@ test("initial homepage HTML identifies Rally Hunt and explains its purpose", () 
   assert.match(homepage, /<h1>Rally Hunt<\/h1>/);
   assert.match(homepage, /browser-based scavenger hunt app/);
   assert.match(homepage, /Google Drive/);
+  assert.match(homepage, /How Rally Hunt works/);
+  assert.match(homepage, /Temporary by design/);
   assert.match(homepage, /href="\/privacy"/);
   assert.match(homepage, /href="\/terms"/);
 });

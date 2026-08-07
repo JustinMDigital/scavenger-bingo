@@ -52,6 +52,7 @@ export type HuntStop = {
 export type Game = {
   id: string;
   code: string;
+  templateId?: GameKitId;
   name: string;
   phase: HuntPhase;
   activeStopId: string | null;
@@ -83,6 +84,8 @@ export type GameTimerPatch = Partial<
     | "timerRunning"
     | "timerStartedAt"
     | "timerSecondsTotal"
+    | "timerMode"
+    | "timerDurationMinutes"
     | "boardHidden"
     | "name"
     | "setupComplete"

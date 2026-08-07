@@ -10,6 +10,7 @@ export default defineConfig({
   test: {
     include: [
       "worker/**/*.test.ts",
+      "src/playerNameFilter.test.ts",
       "src/slidesExport.test.ts",
       "src/taskCatalog.test.ts",
     ],

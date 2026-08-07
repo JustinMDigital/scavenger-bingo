@@ -116,6 +116,41 @@ describe("Cloudflare game room", () => {
     expect(configuredState.game.boardHidden).toBe(true);
     expect(configuredState.game.playerExportMode).toBe("host-only");
 
+    const countdownUpdate = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "updateGame",
+        payload: {
+          gameId: configuredState.game.id,
+          patch: { timerMode: "duration", timerDurationMinutes: 75 },
+        },
+      },
+    );
+    expect(countdownUpdate.status).toBe(200);
+    const countdownState = await (
+      await get("/api/games/CF-TEST", HOST_COOKIE)
+    ).json<GameState>();
+    expect(countdownState.game.timerMode).toBe("duration");
+    expect(countdownState.game.timerDurationMinutes).toBe(75);
+    expect(countdownState.game.timerSecondsTotal).toBe(75 * 60);
+    expect(countdownState.boardAssignments).toEqual(
+      configuredState.boardAssignments,
+    );
+
+    const restoreSchedule = await postJson(
+      "/api/games/CF-TEST/actions",
+      HOST_COOKIE,
+      {
+        action: "updateGame",
+        payload: {
+          gameId: configuredState.game.id,
+          patch: { timerMode: "schedule" },
+        },
+      },
+    );
+    expect(restoreSchedule.status).toBe(200);
+
     const enablePlayerRecaps = await postJson(
       "/api/games/CF-TEST/actions",
       HOST_COOKIE,
@@ -148,6 +183,34 @@ describe("Cloudflare game room", () => {
     expect(publicState.roster).toEqual([]);
     expect(publicState.submissions).toEqual([]);
     expect(publicState.boardAssignments).toEqual([]);
+
+    const blockedPlayerJoin = await postJson(
+      "/api/games/CF-TEST/join",
+      PLAYER_COOKIE,
+      {
+        gameId: configuredState.game.id,
+        groupId: "team-1",
+        displayName: "Sh1t",
+      },
+    );
+    expect(blockedPlayerJoin.status).toBe(400);
+    expect(await blockedPlayerJoin.json()).toEqual({
+      error: "Choose a different nickname.",
+    });
+
+    const blockedSlurJoin = await postJson(
+      "/api/games/CF-TEST/join",
+      PLAYER_COOKIE,
+      {
+        gameId: configuredState.game.id,
+        groupId: "team-1",
+        displayName: "Sam porch monkey",
+      },
+    );
+    expect(blockedSlurJoin.status).toBe(400);
+    expect(await blockedSlurJoin.json()).toEqual({
+      error: "Choose a different nickname.",
+    });
 
     const playerJoin = await postJson("/api/games/CF-TEST/join", PLAYER_COOKIE, {
       gameId: configuredState.game.id,
@@ -1399,6 +1462,7 @@ describe("Cloudflare game room", () => {
 
       const state = await (await get("/api/games/KIT-TEST", hostCookie)).json<GameState>();
       expect(state.game.name).toBe(kit.gameName);
+      expect(state.game.templateId).toBe(kit.id);
       expect(state.game.playMode).toBe(kit.playMode);
       expect(state.game.winCondition).toBe(kit.winCondition);
       expect(state.game.boardSize).toBe(kit.boardSize);
@@ -1652,6 +1716,7 @@ type GameState = {
   game: {
     id: string;
     name: string;
+    templateId?: string;
     playerExportMode: "host-only" | "team-after-review";
     phase: string;
     activeStopId: string | null;

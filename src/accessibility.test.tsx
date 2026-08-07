@@ -17,6 +17,7 @@ import App, {
   GroupView,
   HostGate,
   HostLiveBoard,
+  TimingSettingsPanel,
 } from "./App";
 import { GAME_KITS } from "./gameKits";
 import { PlayerSlidesExport } from "./PlayerSlidesExport";
@@ -141,6 +142,7 @@ describe("public page accessibility", () => {
     ["/privacy", "Privacy"],
     ["/terms", "Terms"],
     ["/support", "Support"],
+    ["/host?start=location", "Where will people play?"],
     ["/templates", "Start with a game that already fits."],
     ["/templates/classroom", "Classroom Starter"],
   ])("has no automated accessibility violations at %s", async (path, heading) => {
@@ -198,6 +200,87 @@ describe("public page accessibility", () => {
     ).toBeTruthy();
     expect(await screen.findByText(/anyone can host/i)).toBeTruthy();
     expect(screen.getByText(/friends, family, a class, or any other group/i)).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "A real-world game, coordinated from everyone’s phones.",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Turn a finished board into a presentation.",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Temporary by design." }),
+    ).toBeTruthy();
+  });
+
+  it("starts room creation with a concrete setting choice", async () => {
+    window.history.replaceState({}, "", "/host?start=location");
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Where will people play?" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("radio", { name: "Home or indoors" }).getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect(
+      screen.getByRole("link", { name: "See hunts for home" }).getAttribute("href"),
+    ).toBe("/templates?setting=home");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Workplace" }));
+
+    expect(
+      screen.getByRole("radio", { name: "Workplace" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("link", { name: "See workplace hunts" })
+        .getAttribute("href"),
+    ).toBe("/templates?setting=workplace");
+    expect(
+      screen.getByRole("link", { name: "Build from scratch" }).getAttribute("href"),
+    ).toBe("/host?start=custom");
+    expect(
+      screen
+        .getByRole("link", { name: "Already made a room? Reopen it." })
+        .getAttribute("href"),
+    ).toBe("/host?start=reopen");
+  });
+
+  it("does not reopen a stored room when the host explicitly starts a new hunt", async () => {
+    window.localStorage.setItem("scavenger-blackout-game-code", "OLD-ROOM");
+    window.history.replaceState({}, "", "/host?start=location");
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Where will people play?" }),
+    ).toBeTruthy();
+    expect(gameServiceMocks.loadGameState).not.toHaveBeenCalled();
+  });
+
+  it("shows purposeful hunts that match the chosen setting", async () => {
+    window.history.replaceState({}, "", "/templates?setting=workplace");
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Choose a hunt for a workplace.",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("Create a hunt · Step 2 of 2")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "New Team Welcome" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Office Team-Building" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Quick Bingo" })).toBeNull();
+    expect(
+      screen
+        .getAllByRole("link", { name: "Change setting" })
+        .every((link) => link.getAttribute("href") === "/host?start=location"),
+    ).toBe(true);
   });
 
   it("lets people match and start a template without opening every preview", async () => {
@@ -336,6 +419,71 @@ describe("focused interaction accessibility", () => {
     confirm.mockRestore();
   });
 
+  it("does not suggest Quick Bingo when a room already uses a selected template", () => {
+    const theaterTemplate = GAME_KITS.find((template) => template.id === "theater-tech")!;
+
+    render(
+      <GameSettingsPanel
+        boardsLocked={false}
+        browseTemplatesHref="/host/templates?code=A11Y-ROOM"
+        game={{ ...TEST_GAME, name: theaterTemplate.gameName, setupComplete: false }}
+        hasExistingSetup
+        selectedTemplate={theaterTemplate}
+        onConfigure={vi.fn().mockResolvedValue(true)}
+        onNext={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Does this hunt fit your group?" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Ready-made starting point")).toBeTruthy();
+    expect(screen.getByText(theaterTemplate.name)).toBeTruthy();
+    expect(screen.queryByText("Start with Quick Bingo")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Quick Bingo/ })).toBeNull();
+  });
+
+  it("turns photo and sharing safeguards into clear review steps", () => {
+    const theaterTemplate = GAME_KITS.find(
+      (template) => template.id === "theater-tech",
+    )!;
+
+    render(
+      <GameSettingsPanel
+        boardsLocked={false}
+        browseTemplatesHref="/host/templates?code=A11Y-ROOM"
+        game={{
+          ...TEST_GAME,
+          name: theaterTemplate.gameName,
+          proofMode: "required",
+          setupComplete: false,
+        }}
+        hasExistingSetup
+        selectedTemplate={theaterTemplate}
+        onConfigure={vi.fn().mockResolvedValue(true)}
+        onNext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Review permissions" }));
+
+    const continueButton = screen.getByRole("button", {
+      name: "Save and continue to teams",
+    });
+    expect(screen.getByText("Change only what matters")).toBeTruthy();
+    expect(screen.getByText("Confirm photo permission")).toBeTruthy();
+    expect(continueButton.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByLabelText(/Confirm photo permission/i));
+    expect(continueButton.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(
+      screen.getByLabelText(/Let players keep a copy after the hunt/i),
+    );
+    expect(screen.getByText("Confirm sharing permission")).toBeTruthy();
+    expect(continueButton.hasAttribute("disabled")).toBe(true);
+  });
+
   it("discards unsaved custom settings when the host cancels", () => {
     render(
       <GameSettingsPanel
@@ -348,16 +496,64 @@ describe("focused interaction accessibility", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Change options" }));
-    fireEvent.change(screen.getByLabelText("Players"), {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change a few details" }),
+    );
+    fireEvent.change(screen.getByLabelText("People play as"), {
       target: { value: "individual" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Change options" }));
-
-    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe(
-      TEST_GAME.playMode,
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change a few details" }),
     );
+
+    expect(
+      (screen.getByLabelText("People play as") as HTMLSelectElement).value,
+    ).toBe(TEST_GAME.playMode);
+    expect(screen.queryByLabelText("Timing")).toBeNull();
+  });
+
+  it("keeps timing controls together on the final setup step", async () => {
+    const onSave = vi.fn().mockResolvedValue(true);
+
+    render(
+      <TimingSettingsPanel
+        disabled={false}
+        game={{ ...TEST_GAME, setupComplete: false }}
+        onSave={onSave}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /No timer/ }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: /Countdown/ }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith({
+        timerDurationMinutes: TEST_GAME.timerDurationMinutes,
+        timerMode: "duration",
+      }),
+    );
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: /Countdown length in minutes/ }), {
+      target: { value: "75" },
+    });
+    fireEvent.blur(screen.getByRole("spinbutton", { name: /Countdown length in minutes/ }));
+
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith({
+        timerDurationMinutes: 75,
+        timerMode: "duration",
+      }),
+    );
+    expect(screen.queryByRole("button", { name: "Save timing" })).toBeNull();
+    expect(screen.queryByText("How should the hunt run?")).toBeNull();
+
+    const result = await axe.run(document.body, {
+      rules: { "color-contrast": { enabled: false } },
+    });
+    expect(result.violations).toEqual([]);
   });
 
   it("clears a stale player board when the host has ended the room", async () => {

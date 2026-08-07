@@ -12,6 +12,7 @@ import {
   upgradeRoom,
 } from "./model";
 import { getGameKit } from "../src/gameKits";
+import { isAllowedPlayerName } from "../src/playerNameFilter";
 import { getCatalogTask } from "../src/taskCatalog";
 import type {
   BoardSize,
@@ -619,6 +620,10 @@ export class GameRoom extends DurableObject<Env> {
     const room = structuredClone(this.requireRoom());
     requireGameId(room, body.gameId);
     const displayName = cleanName(body.displayName, "Name");
+
+    if (!isAllowedPlayerName(displayName)) {
+      throw new HttpError(400, "Choose a different nickname.");
+    }
 
     if (!room.game.lobbyOpen) {
       throw new HttpError(409, "The host has closed this lobby.");
@@ -2234,6 +2239,30 @@ function applyGamePatch(room: StoredRoom, patch: Record<string, unknown>) {
   if (patch.timerSecondsTotal !== undefined) {
     room.game.timerSecondsTotal = Math.max(0, positiveInteger(patch.timerSecondsTotal, 0));
   }
+  const timingModeChanged = patch.timerMode !== undefined;
+  const timingDurationChanged = patch.timerDurationMinutes !== undefined;
+  if (timingModeChanged) {
+    room.game.timerMode = enumValue(
+      patch.timerMode,
+      ["none", "duration", "schedule"] as const,
+      "timer mode",
+    );
+  }
+  if (timingDurationChanged) {
+    room.game.timerDurationMinutes = Math.min(
+      1440,
+      Math.max(1, positiveInteger(patch.timerDurationMinutes, 60)),
+    );
+  }
+  if (timingModeChanged || timingDurationChanged) {
+    if (room.game.timerMode !== "schedule") room.game.activeStopId = null;
+    if (room.game.timerMode === "none") {
+      room.game.timerRunning = false;
+      room.game.timerSecondsTotal = 0;
+    } else if (room.game.timerMode === "duration") {
+      room.game.timerSecondsTotal = room.game.timerDurationMinutes * 60;
+    }
+  }
   if (patch.boardHidden !== undefined) room.game.boardHidden = Boolean(patch.boardHidden);
   // Evaluate this rule against the saved pre-patch game state. Otherwise one
   // request could set setupComplete=false and enable player exports after play
@@ -2365,6 +2394,7 @@ function applySetupComplete(room: StoredRoom, value: unknown) {
 
 function applyRoomTemplate(room: StoredRoom, template: string, startTime?: string) {
   const templateId = template.trim().toLowerCase();
+  room.game.templateId = templateId;
   room.game.setupComplete = false;
   room.game.boardHidden = true;
   room.game.phase = "review";

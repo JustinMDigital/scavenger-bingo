@@ -119,6 +119,60 @@ describe("catalog board editor", () => {
       })),
     ).toEqual([]);
   });
+
+  it("shows a sample board before the editor is expanded", () => {
+    renderEditor({ openByDefault: false, showHeading: true });
+
+    expect(screen.getByRole("heading", { name: "Sample board" })).toBeTruthy();
+    expect(screen.getByText("Blue Team")).toBeTruthy();
+    expect(screen.queryByRole("searchbox", { name: "Search task catalog" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Group Selfie" }));
+    expect(screen.getByRole("heading", { name: "Group Selfie" })).toBeTruthy();
+    expect(screen.getByText(TASK_CATALOG[0].description)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Group Selfie" }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close challenge preview" }));
+    expect(screen.queryByRole("heading", { name: "Group Selfie" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+
+    expect(screen.queryByRole("heading", { name: "Sample board" })).toBeNull();
+    expect(screen.getByRole("searchbox", { name: "Search task catalog" })).toBeTruthy();
+  });
+
+  it("prioritizes selected tasks when editing a template", () => {
+    renderEditor({ prioritizeSelectedTasks: true });
+
+    expect(screen.getByText("Selected tasks")).toBeTruthy();
+    expect(screen.getByText("8 selected")).toBeTruthy();
+    expect(screen.queryByRole("searchbox", { name: "Search task catalog" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add tasks" }));
+    expect(screen.getByRole("searchbox", { name: "Search task catalog" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide task library" })).toBeTruthy();
+  });
+
+  it("keeps template task scrolling on the page and reveals the full list on request", () => {
+    const templateTasks: Task[] = [
+      TASKS[0],
+      ...TASK_CATALOG.slice(0, 12).map((task, index) => ({
+        id: task.id,
+        catalogId: task.id,
+        title: task.title,
+        description: task.description,
+        icon: task.icon,
+        sortOrder: index + 2,
+      })),
+    ];
+
+    renderEditor({ prioritizeSelectedTasks: true, tasks: templateTasks });
+
+    expect(document.querySelectorAll(".selected-task-row")).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "Show all 12 tasks" }));
+    expect(document.querySelectorAll(".selected-task-row")).toHaveLength(12);
+    expect(screen.getByRole("button", { name: "Show fewer tasks" })).toBeTruthy();
+  });
 });
 
 function renderEditor({
@@ -127,6 +181,9 @@ function renderEditor({
   onAddTask = vi.fn(),
   onResetCatalogTask = vi.fn(),
   onUpdateTask = vi.fn(),
+  openByDefault = true,
+  prioritizeSelectedTasks = false,
+  showHeading = false,
 }: {
   tasks?: Task[];
   onAddCatalogTask?: (catalogTaskId: string) => void;
@@ -136,6 +193,9 @@ function renderEditor({
     taskId: string,
     patch: Partial<Pick<Task, "title" | "description" | "icon">>,
   ) => void;
+  openByDefault?: boolean;
+  prioritizeSelectedTasks?: boolean;
+  showHeading?: boolean;
 } = {}) {
   return render(
     <BoardEditor
@@ -154,9 +214,10 @@ function renderEditor({
       onSaveGroupBoard={vi.fn()}
       onUpdateBoardSetup={vi.fn()}
       onUpdateTask={onUpdateTask}
-      openByDefault
+      openByDefault={openByDefault}
       playMode="teams"
-      showHeading={false}
+      prioritizeSelectedTasks={prioritizeSelectedTasks}
+      showHeading={showHeading}
       submissions={[]}
       tasks={tasks}
     />,

@@ -13,6 +13,7 @@ export const MAX_PLAYABLE_TASKS_PER_ROOM = 100;
 export type StoredGame = {
   id: string;
   code: string;
+  templateId?: string;
   name: string;
   phase: HuntPhase;
   activeStopId: string | null;
